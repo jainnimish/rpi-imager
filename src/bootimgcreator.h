@@ -19,6 +19,7 @@
  * Platform-specific implementations are in:
  * - mac/bootimgcreator_macos.cpp
  * - linux/bootimgcreator_linux.cpp
+ * - freebsd/bootimgcreator_freebsd.cpp
  * - windows/bootimgcreator_windows.cpp
  */
 class BootImgCreator
@@ -31,10 +32,9 @@ public:
      * @param totalSize Size in bytes for the boot.img file
      * @return true if successful, false otherwise
      */
-    static bool createBootImg(const QMap<QString, QByteArray> &files, 
-                             const QString &outputPath, 
+    static bool createBootImg(const QMap<QString, QByteArray> &files,
+                             const QString &outputPath,
                              qint64 totalSize);
 };
 
 #endif // BOOTIMGCREATOR_H
-

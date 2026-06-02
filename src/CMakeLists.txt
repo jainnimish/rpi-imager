@@ -193,12 +193,22 @@ endif()
 
 
 # Bundled libusb (for rpiboot Compute Module support)
-include(dependencies/libusb.cmake)
+if(BSD STREQUAL "FreeBSD")
+    # FreeBSD has an implementation of libusb in its base system and moreover
+    # the libusb project does not officially support FreeBSD
+
+    set(LIBUSB_INCLUDE_DIR "/usr/include/libusb.h")
+    set(LIBUSB_LIBRARIES "/usr/lib/libusb.a")
+else()
+    include(dependencies/libusb.cmake)
+endif()
 
 # Add dependencies
 if (APPLE)
     include(mac/Platform.cmake)
-elseif (UNIX)
+elseif (BSD STREQUAL "FreeBSD")
+    include(freebsd/Platform.cmake)
+elseif (LINUX)
     include(linux/Platform.cmake)
 elseif (WIN32)
     include(windows/Platform.cmake)
@@ -535,7 +545,10 @@ else()
     include(linux/PlatformPackaging.cmake)
 endif()
 
-add_dependencies(${PROJECT_NAME} zlibstatic yescrypt usb-1.0-static)
+add_dependencies(${PROJECT_NAME} zlibstatic yescrypt)
+if(NOT BSD STREQUAL "FreeBSD")
+    add_dependencies(${PROJECT_NAME} usb-1.0-static)
+endif()
 include_directories(${CURL_INCLUDE_DIR} ${LibArchive_INCLUDE_DIR} ${LIBLZMA_INCLUDE_DIRS} ${LIBDRM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIR} ${YESCRYPT_INCLUDE_DIR} ${LIBUSB_INCLUDE_DIR})
 
 # Link different Qt components based on build type
