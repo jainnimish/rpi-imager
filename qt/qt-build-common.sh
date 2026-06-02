@@ -673,6 +673,18 @@ install_linux_basic_deps() {
     fi
 }
 
+install_freebsd_deps() {
+    if [ "$SKIP_DEPENDENCIES" -eq 0 ]; then
+        echo "Installing basic build dependencies..."
+
+        sudo pkg update
+        sudo pkg install cmake ninja pkgconf perl5 python
+        sudo pkg install icu pcre2 freetype2 fontconfig openssl
+
+        echo "FreeBSD dependencies installed via pkg"
+    fi
+}
+
 # Function to install macOS dependencies via Homebrew
 # Usage: install_macos_deps [universal_build]
 install_macos_deps() {
