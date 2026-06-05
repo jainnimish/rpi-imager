@@ -15,10 +15,12 @@
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/mount.h>
+#include <libgeom.h>
 #include <sys/eventfd.h>  // eventfd for modern thread signaling
 #include <sys/utsname.h>   // uname() for kernel version logging
 #include <poll.h>          // poll() instead of select()
 #include <signal.h>        // Signal masking for worker thread
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <ifaddr.h>
 #include <netlink/netlink.h>
@@ -167,7 +169,6 @@ bool isBeepAvailable() {
     const char* soundFile = findSoundFile();
     if (soundFile) {
         if (commandExists(AudioCommand::PwPlay) ||
-            commandExists(AudioCommand::Aplay) ||
             commandExists(AudioCommand::Pactl)) {
             return true;
         }
@@ -373,7 +374,7 @@ void attachConsole() {
 
 const char* getBundlePath() {
     static thread_local char resolved[PATH_MAX];
-    ssize_t len = sizeof(resolved);
+    size_t len = sizeof(resolved);
 
     // Use sysctl to get the path of current executable
     const int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
@@ -972,12 +973,101 @@ static bool isDisk(const char* devicePath) {
 
 DiskResult unmountDisk(const QString& device) {
     QByteArray deviceBytes = device.toUtf8();
-    const char* devicePath = deviceBytes.constData();
+    const char* devicePath = g_device_path(deviceBytes.constData());
 
-    if (!isDisk(devicePath)) {
+    struct gmesh devtree;
+    struct gclass *geom_class;
+    struct ggeom *geom;
+    struct gconsumer *consumer;
+    struct gprovider *provider;
+
+    bool foundDisk = false;
+    bool foundPartition = false;
+
+    if (devicePath == NULL) {
+        qDebug() << "unmountDisk: Device with name '"
+                 << devicePath
+                 << "' does not appear to exist in the geom hierarchy";
         return DiskResult::InvalidDrive;
     }
 
+    std::vector<struct gprovider*> mountPartitions;
+
+    geom_gettree(&devtree);
+    LIST_FOREACH(geom_class, &devtree.lg_class, lg_class) {
+        if (QString(geom_class->lg_name) != "PART") {
+            continue;
+        }
+
+        LIST_FOREACH(geom, &geom_class->lg_geom, lg_geom) {
+            if (QString(g_device_path(geom->lg_name)) == devicePath) {
+                foundDisk = true; // The current geom object is the disk we seek
+            }
+
+            // Look through partitions and add them to the unmount list
+            LIST_FOREACH(provider, &geom->lg_provider, lg_provider) {
+                if (foundDisk) {
+                    // Unmount every partition on the disk
+                    mountPartitions.push_back(provider);
+                } else if (QString(g_device_path(provider->lg_name)) == devicePath) {
+                    // The current partition is the device we seek
+                    foundPartition = true;
+                    mountPartitions.push_back(provider);
+                    break;
+                }
+            }
+
+            if (foundDisk || foundPartition) {
+                break;
+            }
+        }
+
+        if (foundDisk || foundPartition) {
+            break;
+        }
+    }
+    geom_deletetree(&devtree);
+
+    if (!foundDisk && !foundPartition) {
+        qDebug() << "unmountDisk: Failed to find partition table associated with"
+                 << devicePath;
+        return DiskResult::InvalidDrive;
+    }
+
+    std::vector<struct gprovider*> failedUnmounts;
+
+    for (const auto partition : mountPartitions) {
+        char *unmountPath = g_device_path(partition->lg_name);
+        if (unmount(unmountPath, 0) == -1) {
+            qDebug() << "unmountDisk: unmounted" << unmountPath << "(normal, first try)";
+        } else if (unmount(unmountPath, 0) == -1) {
+            qDebug() << "unmountDisk: unmounted" << unmountPath << "(normal, second try)";
+        } else if (unmount(unmountPath, MNT_FORCE) == -1) {
+            qDebug() << "unmountDisk: unmounted" << unmountPath << "(MNT_FORCE; may lead to data loss)";
+        } else {
+            failedUnmounts.push_back(partition);
+            qWarning() << "unmountDisk: Failed to unmount partition"
+                       << ", partition name=" << partition->lg_name
+                       << ", errno=" << errno << " (" << std::strerror(errno) << ")";
+        }
+    }
+
+    if (failedUnmounts.size() == 0) {
+        return DiskResult::Success;
+    } else if (failedUnmounts.size() < mountPartitions.size()) {
+        qWarning() << "unmountDisk: Partial failure"
+                   << ", total=" << mountPartitions.size()
+                   << ", failed=" << failedUnmounts.size()
+                   << ", failed list:";
+
+        for (const auto failed : failedUnmounts) {
+            qWarning() << " -" << g_device_path(failed->lg_name);
+        }
+    } else {
+        qWarning() << "unmountDisk: Failed to unmount all partitions"
+                   << ", total=" << mountPartitions.size();
+    }
+    return DiskResult::Busy;
 }
 
 DiskResult ejectDisk(const QString& device) {

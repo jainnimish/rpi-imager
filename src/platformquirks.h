@@ -12,7 +12,7 @@
 #include <functional>
 
 namespace PlatformQuirks {
-    
+
     /** Callback type for network status changes. Parameter is true if network is available. */
     using NetworkStatusCallback = std::function<void(bool)>;
 
@@ -38,17 +38,17 @@ namespace PlatformQuirks {
 
     /** Check if the system has network connectivity. */
     bool hasNetworkConnectivity();
-    
+
     /** Check if system is ready for network operations (including time sync on embedded). */
     bool isNetworkReady();
-    
-    /** 
+
+    /**
      * Start monitoring network status changes.
      * Callback will be invoked when network status changes (true = available, false = unavailable).
      * Only one callback can be registered at a time.
      */
     void startNetworkMonitoring(NetworkStatusCallback callback);
-    
+
     /** Stop monitoring network status changes. */
     void stopNetworkMonitoring();
 
@@ -207,7 +207,7 @@ namespace PlatformQuirks {
      */
     DiskResult refreshDiskView(const QString& device);
 
-#ifdef Q_OS_LINUX
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
     /**
      * Find the system's CA certificate bundle for libcurl.
      *
