@@ -69,7 +69,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
     # Use -Os instead of -O3 for better code size vs performance balance
     # Enable function and data sections for dead code elimination
     add_compile_options(-Os -ffunction-sections -fdata-sections)
-    
+
     # Enable dead code elimination at link time (for executables and shared libraries only)
     if(APPLE)
         # macOS uses -dead_strip instead of --gc-sections
@@ -81,12 +81,12 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
         # Windows with MinGW uses --gc-sections
         add_link_options(-Wl,--gc-sections)
     endif()
-    
+
     # Enable Link Time Optimization (LTO) for non-Windows targets
     if(NOT WIN32)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
-    
+
     # Only add build-type specific flags (optimization and sections flags are already added globally above)
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -DNDEBUG")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DNDEBUG")
@@ -184,7 +184,7 @@ if(APPLE)
     find_package(CURL REQUIRED)
     # Normalize variable naming used later in include_directories
     set(CURL_INCLUDE_DIR ${CURL_INCLUDE_DIRS})
-    
+
     # Note: No need to find OpenSSL on macOS - we use native Security.framework
     # for RSA operations and CommonCrypto for hashing
 else()
@@ -353,7 +353,7 @@ if(GENERATE_TIMEZONES_FROM_IANA)
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateTimezones.cmake
         timezones_generated.txt timezones.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/timezones.txt
-        EXTRA_CMAKE_ARGS 
+        EXTRA_CMAKE_ARGS
             -DTZDATA_URL=${TZDATA_URL}
             -DTZDATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/tzdata
     )
@@ -387,7 +387,7 @@ if(GENERATE_CAPITAL_CITIES)
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateCapitalCities.cmake
         capital-cities_generated.txt capital-cities.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/capital-cities.txt
-        EXTRA_CMAKE_ARGS 
+        EXTRA_CMAKE_ARGS
             -DAPI_URL=${REST_COUNTRIES_URL}
             -DKEYMAP_FILE=${CMAKE_CURRENT_SOURCE_DIR}/keymap-layouts.txt
     )
@@ -559,6 +559,8 @@ if (WIN32)
     include(windows/PlatformPackaging.cmake)
 elseif(APPLE)
     include(mac/PlatformPackaging.cmake)
+elseif(BSD STREQUAL "FreeBSD")
+    include(freebsd/PlatformPackaging.cmake)
 else()
     include(linux/PlatformPackaging.cmake)
 endif()
@@ -566,6 +568,8 @@ endif()
 add_dependencies(${PROJECT_NAME} zlibstatic yescrypt)
 if(NOT BSD STREQUAL "FreeBSD")
     add_dependencies(${PROJECT_NAME} usb-1.0-static)
+else()
+    target_link_libraries(${PROJECT_NAME} PRIVATE geom)
 endif()
 include_directories(${CURL_INCLUDE_DIR} ${LibArchive_INCLUDE_DIR} ${LIBLZMA_INCLUDE_DIRS} ${LIBDRM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIR} ${YESCRYPT_INCLUDE_DIR} ${LIBUSB_INCLUDE_DIR})
 
