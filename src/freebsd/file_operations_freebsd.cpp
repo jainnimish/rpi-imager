@@ -51,6 +51,11 @@ bool FreeBSDFileOperations::IsBlockDevicePath(const std::string& path) {
     return (path.find("/dev/") == 0);
 }
 
+FreeBSDFileOperations::~FreeBSDFileOperations() {
+  WaitForPendingWrites();
+  Close();
+}
+
 FileError FreeBSDFileOperations::OpenDevice(const std::string& path) {
     std::cout << "FreeBSDFileOperations::OpenDevice: "
               << "Opening FreeBSD device: " << path
