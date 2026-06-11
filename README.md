@@ -6,6 +6,7 @@ Raspberry Pi Imaging Utility
 
 - To install on Raspberry Pi OS, use `sudo apt update && sudo apt install rpi-imager`.
 - Download the latest version for Windows, macOS and Ubuntu from the [Raspberry Pi downloads page](https://www.raspberrypi.com/software/).
+- To install on FreeBSD, use `pkg install rpi-imager`. If you want the CLI-only version then `pkg install rpi-imager-cli`.
 
 ## How to install and use Raspberry Pi Imager
 
