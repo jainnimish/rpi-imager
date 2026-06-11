@@ -2,17 +2,7 @@
 
 find_package(GnuTLS REQUIRED)
 
-# Find liburing for async I/O
-# Uses pkg-config since liburing doesn't have a CMake config
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBURING liburing)
-
-if(LIBURING_FOUND)
-    message(STATUS "Found liburing: ${LIBURING_VERSION}")
-    add_definitions(-DHAVE_LIBURING)
-else()
-    message(WARNING "liburing not found - async I/O will be disabled. Install with: sudo apt install liburing-dev")
-endif()
 
 set(PLATFORM_SOURCES
     drivelist/drivelist_freebsd.cpp
