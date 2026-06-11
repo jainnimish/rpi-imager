@@ -112,3 +112,65 @@ rm ${pi-gen-micro-root}/packages/rpi-imager-embedded*.deb
 cp ../rpi-imager-embedded*.deb ${pi-gen-micro-root}/packages/
 pushd ${pi-gen-micro-root}/packages/ && dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz && popd
 ```
+
+### FreeBSD
+
+It is recommended to build the port through Poudriere or the Makefile in `/usr/ports/deskutils/rpi-imager/`. If you would like to do it manually, follow the steps below. The CLI-build process will output a self-contained tarball while the GUI build will install an executable in `/usr/local/bin`.
+
+#### Get dependencies
+
+- Install the build dependencies:
+
+```sh
+pkg install nettle libidn2 git gnutls
+```
+
+#### Get the source
+
+```sh
+git clone --depth 1 https://github.com/raspberrypi/rpi-imager
+```
+
+#### Build Qt
+If building the CLI version,
+
+```sh
+./qt/build-qt-freebsd-cli.sh
+```
+
+Otherwise,
+```sh
+./qt/build-qt-freebsd.sh
+```
+
+This will build and install the version of Qt preferred for Raspberry Pi Imager into /opt/Qt/<version>.
+
+#### Build and install the package
+
+```sh
+./create-freebsd-cli.sh
+```
+
+for CLI-only version and
+
+```sh
+./create-freebsd.sh
+```
+
+for GUI version.
+
+#### Uninstalling
+CLI
+```sh
+rm -rf /opt/Qt/<version>
+```
+Also delete $APPDIR, where the executable was saved.
+
+GUI
+``` sh
+rm -rf /opt/Qt/<version>
+rm -f /usr/local/bin/rpi-imager
+rm -f /usr/local/share/icons/hicolor/scalable/apps/rpi-imager.svg
+rm -f /usr/local/share/applications/com.raspberrypi.rpi-imager.desktop
+rm -f /usr/local/share/metainfo/com.raspberrypi.rpi-imager.metainfo.xml
+```
