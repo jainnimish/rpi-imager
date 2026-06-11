@@ -552,6 +552,7 @@ if(NOT BSD STREQUAL "FreeBSD")
     add_dependencies(${PROJECT_NAME} usb-1.0-static)
 else()
     target_link_libraries(${PROJECT_NAME} PRIVATE geom)
+    target_link_libraries(${PROJECT_NAME} PRIVATE cam)
 endif()
 include_directories(${CURL_INCLUDE_DIR} ${LibArchive_INCLUDE_DIR} ${LIBLZMA_INCLUDE_DIRS} ${LIBDRM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIR} ${YESCRYPT_INCLUDE_DIR} ${LIBUSB_INCLUDE_DIR})
 
