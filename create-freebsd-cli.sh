@@ -12,7 +12,7 @@ QT_ROOT_ARG=""
 usage() {
     echo "Usage: $0 [options]"
     echo "Options:"
-    echo "  --arch=ARCH            Target architecture (x86_64, aarch64, armv7l)"
+    echo "  --arch=ARCH            Target architecture (amd64, aarch64, armv7l)"
     echo "  --qt-root=PATH         Path to Qt installation directory"
     echo "  --no-clean             Don't clean build directory"
     echo "  -h, --help             Show this help message"
@@ -188,12 +188,12 @@ cd "$BUILD_DIR"
 
 # Set architecture-specific CMake flags
 CMAKE_EXTRA_FLAGS=""
-if [ "$ARCH" = "aarch64" ] && [ "$(uname -m)" = "x86_64" ]; then
-    # Cross-compiling from x86_64 to aarch64
+if [ "$ARCH" = "aarch64" ] && [ "$(uname -m)" = "amd64" ]; then
+    # Cross-compiling from amd64 to aarch64
     echo "Cross-compiling from $(uname -m) to $ARCH"
     CMAKE_EXTRA_FLAGS="-DCMAKE_SYSTEM_NAME=FreeBSD -DCMAKE_SYSTEM_PROCESSOR=aarch64"
-elif [ "$ARCH" = "armv7l" ] && [ "$(uname -m)" = "x86_64" ]; then
-    # Cross-compiling from x86_64 to armv7l
+elif [ "$ARCH" = "armv7l" ] && [ "$(uname -m)" = "amd64" ]; then
+    # Cross-compiling from amd64 to armv7l
     echo "Cross-compiling from $(uname -m) to $ARCH"
     CMAKE_EXTRA_FLAGS="-DCMAKE_SYSTEM_NAME=FreeBSD -DCMAKE_SYSTEM_PROCESSOR=arm"
 fi
@@ -205,15 +205,13 @@ CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DQt6_ROOT=$QT_DIR"
 CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DBUILD_CLI_ONLY=ON"
 
 # shellcheck disable=SC2086
-cmake "../$SOURCE_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_INSTALL_PREFIX=/usr $CMAKE_EXTRA_FLAGS
+cmake "../$SOURCE_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_INSTALL_PREFIX=/usr/local $CMAKE_EXTRA_FLAGS
 make -j"$(nproc)"
 
 echo "Creating CLI-only AppDir..."
 # Install to AppDir
 make DESTDIR="$APPDIR" install
 cd ..
-
-# Desktop file and icon are already installed by CMake
 
 # Create the AppRun file for CLI operation
 cat > "$APPDIR/AppRun" << 'EOF'
@@ -225,7 +223,7 @@ export PATH="${HERE}/usr/bin:${PATH}"
 export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
 
 # Execute the CLI-only binary directly (no --cli flag needed, it's built-in)
-exec "${HERE}/usr/bin/rpi-imager-cli" "$@"
+exec "${HERE}/usr/local/bin/rpi-imager-cli" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
