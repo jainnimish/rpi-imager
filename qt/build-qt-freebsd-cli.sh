@@ -58,7 +58,7 @@ echo "  Target: CLI-only (no GUI modules)"
 # Install dependencies if not skipped
 if [ "$SKIP_DEPENDENCIES" -eq 0 ]; then
     echo "Installing minimal build dependencies for CLI-only Qt..."
-    install_freebsd_deps
+    install_basic_freebsd_deps
 else
     print_skip_deps_message "Qt CLI"
 fi

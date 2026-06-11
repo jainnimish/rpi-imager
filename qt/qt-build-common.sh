@@ -58,7 +58,7 @@ QT_VERSION_PLATFORM_DEFAULT="$QT_VERSION_DEFAULT"
 # Usage: init_common_variables [platform_specific_version]
 init_common_variables() {
     platform_version="${1:-$QT_VERSION_PLATFORM_DEFAULT}"
-    
+
     # Set defaults if not already set by the calling script
     QT_VERSION="${QT_VERSION:-$platform_version}"
     PREFIX="${PREFIX:-$PREFIX_DEFAULT/${QT_VERSION}}"
@@ -68,23 +68,23 @@ init_common_variables() {
     SKIP_DEPENDENCIES="${SKIP_DEPENDENCIES:-$SKIP_DEPENDENCIES_DEFAULT}"
     VERBOSE_BUILD="${VERBOSE_BUILD:-$VERBOSE_BUILD_DEFAULT}"
     UNPRIVILEGED="${UNPRIVILEGED:-$UNPRIVILEGED_DEFAULT}"
-    
+
     # macOS-specific defaults
     UNIVERSAL_BUILD="${UNIVERSAL_BUILD:-0}"
     MAC_OPTIMIZE="${MAC_OPTIMIZE:-1}"
-    
+
     # Derived variables
     QT_MAJOR_VERSION=$(echo "$QT_VERSION" | cut -d. -f1)
-    
+
     # Directory containing the calling script (resolves relative invocation)
     # Note: Caller should set BASE_DIR before calling if $0 is not reliable
     if [ -z "$BASE_DIR" ]; then
         BASE_DIR="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
     fi
-    
+
     # Common build directories
     DOWNLOAD_DIR="$PWD/qt-src"
-    
+
     # Export for use in subprocesses
     export QT_VERSION QT_MAJOR_VERSION PREFIX CORES BUILD_TYPE BASE_DIR
 }
@@ -94,7 +94,7 @@ init_common_variables() {
 # Sets: COMMON_REMAINING_ARGS (space-separated string) with arguments that weren't processed
 parse_common_args() {
     COMMON_REMAINING_ARGS=""
-    
+
     while [ $# -gt 0 ]; do
         case $1 in
             --version=*)
@@ -162,7 +162,7 @@ validate_common_inputs() {
             return 1
             ;;
     esac
-    
+
     # Validate Qt version format (X.Y.Z)
     case "$QT_VERSION" in
         [0-9]*.[0-9]*.[0-9]*)
@@ -173,7 +173,7 @@ validate_common_inputs() {
             return 1
             ;;
     esac
-    
+
     # In unprivileged mode, suggest a user-writable prefix if using default
     if [ "$UNPRIVILEGED" -eq 1 ]; then
         case "$PREFIX" in
@@ -183,14 +183,14 @@ validate_common_inputs() {
                 ;;
         esac
     fi
-    
+
     return 0
 }
 
 # Function to print common configuration
 print_common_config() {
     script_name="${1:-Qt build}"
-    
+
     echo "$script_name configuration:"
     echo "  Version: $QT_VERSION"
     echo "  Prefix: $PREFIX"
@@ -200,7 +200,7 @@ print_common_config() {
     echo "  Verbose Build: $VERBOSE_BUILD"
     echo "  Unprivileged Mode: $UNPRIVILEGED"
     echo "  Platform: $PLATFORM ($ARCH)"
-    
+
     # macOS-specific config
     if [ "$IS_MACOS" -eq 1 ]; then
         echo "  Universal Build: $UNIVERSAL_BUILD"
@@ -211,15 +211,15 @@ print_common_config() {
 # Function to create common build directories
 create_build_directories() {
     build_dir_suffix="${1:-}"
-    
+
     if [ -n "$build_dir_suffix" ]; then
         BUILD_DIR="$PWD/qt-build-$build_dir_suffix"
     else
         BUILD_DIR="$PWD/qt-build"
     fi
-    
+
     mkdir -p "$DOWNLOAD_DIR" "$BUILD_DIR"
-    
+
     # Export for use in calling script
     export BUILD_DIR DOWNLOAD_DIR
 }
@@ -227,15 +227,15 @@ create_build_directories() {
 # Function to download Qt source code
 download_qt_source() {
     echo "Downloading Qt $QT_VERSION source code..."
-    
+
     _orig_dir="$PWD"
     cd "$DOWNLOAD_DIR" || return 1
-    
+
     if [ ! -d "qt-everywhere-src-$QT_VERSION" ]; then
         if [ ! -f "qt-everywhere-src-$QT_VERSION.tar.xz" ]; then
             echo "Downloading Qt source archive..."
             download_url="https://download.qt.io/official_releases/qt/${QT_VERSION%.*}/$QT_VERSION/single/qt-everywhere-src-$QT_VERSION.tar.xz"
-            
+
             if command -v curl >/dev/null 2>&1; then
                 curl -L -o "qt-everywhere-src-$QT_VERSION.tar.xz" "$download_url"
             elif command -v wget >/dev/null 2>&1; then
@@ -246,13 +246,13 @@ download_qt_source() {
                 return 1
             fi
         fi
-        
+
         echo "Extracting Qt source..."
         tar xf "qt-everywhere-src-$QT_VERSION.tar.xz"
     else
         echo "Qt source already extracted"
     fi
-    
+
     cd "$_orig_dir" || return 1
 }
 
@@ -319,7 +319,7 @@ apply_exclusions() {
     features_list="${1:-$BASE_DIR/features_exclude.list}"
     modules_list="${2:-$BASE_DIR/modules_exclude.list}"
     EXCLUSION_OPTS=""
-    
+
     # Apply feature exclusions
     if [ -f "$features_list" ]; then
         echo "Using features exclusion list: $(basename "$features_list")"
@@ -337,7 +337,7 @@ apply_exclusions() {
     else
         echo "Warning: No features exclusion list found at $features_list"
     fi
-    
+
     # Apply module exclusions
     if [ -f "$modules_list" ]; then
         echo "Using modules exclusion list: $(basename "$modules_list")"
@@ -355,7 +355,7 @@ apply_exclusions() {
     else
         echo "Warning: No modules exclusion list found at $modules_list"
     fi
-    
+
     export EXCLUSION_OPTS
 }
 
@@ -369,23 +369,23 @@ create_qt_env_script() {
     script_suffix="${1:-}"
     additional_vars_function="${2:-}"
     env_script_name="qtenv"
-    
+
     if [ -n "$script_suffix" ]; then
         env_script_name="qtenv-$script_suffix"
     fi
-    
+
     # Ensure the bin directory exists
     mkdir -p "$PREFIX/bin"
-    
+
     env_script="$PREFIX/bin/${env_script_name}.sh"
-    
+
     # Use appropriate library path variable for platform
     if [ "$IS_MACOS" -eq 1 ]; then
         lib_path_var="DYLD_LIBRARY_PATH"
     else
         lib_path_var="LD_LIBRARY_PATH"
     fi
-    
+
     cat > "$env_script" << EOF
 #!/bin/sh
 # Source this file to set up the Qt environment
@@ -419,13 +419,13 @@ create_cmake_toolchain() {
     toolchain_suffix="${1:-}"
     additional_cmake_function="${2:-}"
     toolchain_name="qt$QT_MAJOR_VERSION"
-    
+
     if [ -n "$toolchain_suffix" ]; then
         toolchain_name="qt$QT_MAJOR_VERSION-$toolchain_suffix"
     fi
-    
+
     toolchain_file="$PREFIX/${toolchain_name}-toolchain.cmake"
-    
+
     cat > "$toolchain_file" << EOF
 # CMake toolchain file for Qt $QT_VERSION
 set(CMAKE_PREFIX_PATH "${PREFIX}" \${CMAKE_PREFIX_PATH})
@@ -474,15 +474,15 @@ EOF
 # Uses eval to properly handle quoted arguments in the options string
 run_qt_configure() {
     config_opts="$1"
-    
+
     echo "Configuring Qt with options: $config_opts"
-    
+
     if [ "$VERBOSE_BUILD" -eq 1 ]; then
         eval "\"$DOWNLOAD_DIR/qt-everywhere-src-$QT_VERSION/configure\" $config_opts -verbose"
     else
         eval "\"$DOWNLOAD_DIR/qt-everywhere-src-$QT_VERSION/configure\" $config_opts"
     fi
-    
+
     configure_result=$?
     if [ $configure_result -ne 0 ]; then
         echo "Configure failed. Try with --verbose for more details."
@@ -498,13 +498,13 @@ run_qt_configure() {
 # Usage: build_qt
 build_qt() {
     echo "Building Qt (this may take a while)..."
-    
+
     if [ "$VERBOSE_BUILD" -eq 1 ]; then
         cmake --build . --parallel "$CORES" --verbose
     else
         cmake --build . --parallel "$CORES"
     fi
-    
+
     build_result=$?
     if [ $build_result -ne 0 ]; then
         echo "Build failed. Try with --verbose for more details."
@@ -520,7 +520,7 @@ build_qt() {
 # Usage: install_qt
 install_qt() {
     echo "Installing Qt to $PREFIX..."
-    
+
     if [ "$UNPRIVILEGED" -eq 1 ]; then
         # Create prefix directory if it doesn't exist (without sudo)
         mkdir -p "$(dirname "$PREFIX")"
@@ -528,13 +528,13 @@ install_qt() {
     else
         sudo cmake --install .
     fi
-    
+
     install_result=$?
     if [ $install_result -ne 0 ]; then
         echo "Installation failed."
         return 1
     fi
-    
+
     echo "Qt $QT_VERSION has been built and installed to $PREFIX"
 }
 
@@ -557,7 +557,7 @@ print_skip_deps_message() {
 # Function to print final usage instructions
 print_usage_instructions() {
     build_type="${1:-Qt}"
-    
+
     echo ""
     echo "$build_type build completed successfully!"
     echo ""
@@ -565,7 +565,7 @@ print_usage_instructions() {
     echo "  export Qt${QT_MAJOR_VERSION}_ROOT=\"$PREFIX\""
     echo "  export PATH=\"$PREFIX/bin:\$PATH\""
     echo ""
-    
+
     if [ "$UNPRIVILEGED" -eq 1 ]; then
         echo "UNPRIVILEGED MODE NOTES:"
         echo "- Dependencies were not automatically installed"
@@ -613,7 +613,7 @@ EOF
 # Usage: set_arch_prefix_suffix [custom_suffix]
 set_arch_prefix_suffix() {
     suffix="${1:-}"
-    
+
     # macOS uses different naming
     if [ "$IS_MACOS" -eq 1 ]; then
         PREFIX="$PREFIX/macos"
@@ -623,7 +623,7 @@ set_arch_prefix_suffix() {
         export PREFIX
         return
     fi
-    
+
     # Linux naming based on architecture
     case "$ARCH" in
         "x86_64")
@@ -655,7 +655,7 @@ set_arch_prefix_suffix() {
             fi
             ;;
     esac
-    
+
     export PREFIX
 }
 
@@ -673,13 +673,13 @@ install_linux_basic_deps() {
     fi
 }
 
-install_freebsd_deps() {
+install_basic_freebsd_deps() {
     if [ "$SKIP_DEPENDENCIES" -eq 0 ]; then
         echo "Installing basic build dependencies..."
 
         sudo pkg update
-        sudo pkg install cmake ninja pkgconf perl5 python
-        sudo pkg install icu pcre2 freetype2 fontconfig openssl
+        sudo pkg install -y cmake ninja pkgconf perl5 python
+        sudo pkg install -y icu pcre2 freetype2 fontconfig openssl
 
         echo "FreeBSD dependencies installed via pkg"
     fi
@@ -695,15 +695,15 @@ install_macos_deps() {
             echo "Install from: https://brew.sh"
             return 1
         fi
-        
+
         brew update
-        
+
         # Install basic tools
         brew install cmake ninja pkg-config perl python3
-        
+
         # Install libraries
         brew install icu4c pcre2 libpng jpeg-turbo freetype fontconfig openssl@3
-        
+
         echo "macOS dependencies installed via Homebrew"
     fi
 }
@@ -715,12 +715,12 @@ setup_macos_flags() {
     if [ "$MAC_OPTIMIZE" -eq 0 ]; then
         return
     fi
-    
+
     MACOS_VERSION=$(sw_vers -productVersion)
     MACOS_MAJOR=$(echo "$MACOS_VERSION" | cut -d. -f1)
-    
+
     echo "Detected macOS $MACOS_VERSION"
-    
+
     if [ "$UNIVERSAL_BUILD" -eq 1 ]; then
         echo "  Optimizing for Universal Binary (Intel + Apple Silicon)"
         if [ "$MACOS_MAJOR" -ge 11 ]; then
@@ -740,14 +740,14 @@ setup_macos_flags() {
             echo "  Optimizing for Intel x86_64"
             MAC_CFLAGS="-march=x86-64-v2 -mtune=intel"
         fi
-        
+
         if [ "$MACOS_MAJOR" -ge 11 ]; then
             MAC_CFLAGS="$MAC_CFLAGS -mmacos-version-min=11.0"
         else
             MAC_CFLAGS="$MAC_CFLAGS -mmacos-version-min=10.15"
         fi
     fi
-    
+
     export MAC_CFLAGS MAC_CFLAGS_X86_64 MAC_CFLAGS_ARM64
 }
 
@@ -757,7 +757,7 @@ apply_macos_flags() {
     if [ -z "$MAC_CFLAGS" ]; then
         return
     fi
-    
+
     if [ "$UNIVERSAL_BUILD" -eq 1 ]; then
         export CFLAGS="$MAC_CFLAGS"
         export CXXFLAGS="$MAC_CFLAGS"
@@ -780,7 +780,7 @@ apply_macos_flags() {
 setup_homebrew_paths() {
     export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
     export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-    
+
     if [ "$UNIVERSAL_BUILD" -eq 1 ]; then
         export LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib:${LIBRARY_PATH:-}"
         export CPATH="/opt/homebrew/include:/usr/local/include:${CPATH:-}"
@@ -830,7 +830,7 @@ EOF
 # Usage: get_icu_version_for_qt QT_VERSION
 get_icu_version_for_qt() {
     qt_ver="${1:-$QT_VERSION}"
-    
+
     case "$qt_ver" in
         6.9.3)
             echo "76.1"
