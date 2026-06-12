@@ -32,17 +32,33 @@ namespace Drivelist {
 namespace {
 
 /**
- * @brief Return the label associated with a GEOM device, if it exists.
+ * @brief Return the label associated with a GEOM provider, if it exists.
  */
-std::optional<QString> getLabel(const struct ggeom *dev) {
-    QString label;
-    struct gprovider *provider;
-    struct ggeom *providerObj;
+std::optional<QString> getLabel(const struct gprovider *partition) {
+    assert(QString(partition->lg_class->lg_name) == "PART");
 
-    LIST_FOREACH(provider, &dev->lg_provider, lg_provider) {
-        providerObj = provider->lg_geom;
-        if (QString(providerObj->lg_class->lg_name) == "LABEL") {
-            return providerObj->lg_name;
+    struct gconsumer *consumer;
+
+    LIST_FOREACH(consumer, &partition->lg_consumers, lg_consumer) {
+        if (QString(consumer->lg_geom->lg_class->lg_name) == "LABEL") {
+            return consumer->lg_geom->lg_name;
+        }
+    }
+
+    return std::nullopt;
+}
+
+/**
+ * @brief Return the label associated with a GEOM disk, if it exists.
+ */
+std::optional<QString> getLabel(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
+    struct gprovider *provider;
+
+    LIST_FOREACH(provider, &disk->lg_provider, lg_provider) {
+        auto label = getLabel(provider);
+        if (label) {
+            return *label;
         }
     }
 
@@ -53,12 +69,18 @@ std::optional<QString> getLabel(const struct ggeom *dev) {
  * @brief Return the GEOM object representing a disk's partition table, if it exists.
  */
 std::optional<const struct ggeom*> getDiskPartitionTable(const struct ggeom *disk) {
-    struct gprovider *provider;
+    assert(QString(disk->lg_class->lg_name) == "DISK");
 
-    // Search providers of a disk for a partition table
+    struct gprovider *provider;
+    struct gconsumer *consumer;
+
+    // Get providers from a disk for a partition table
     LIST_FOREACH(provider, &disk->lg_provider, lg_provider) {
-        if (QString(provider->lg_geom->lg_class->lg_name) == "PART") {
-            return provider->lg_geom;
+        // Check if any providers are consumed by a partition table
+        LIST_FOREACH(consumer, &provider->lg_consumers, lg_consumer) {
+            if (QString(consumer->lg_geom->lg_class->lg_name) == "PART") {
+                return consumer->lg_geom;
+            }
         }
     }
 
@@ -68,14 +90,15 @@ std::optional<const struct ggeom*> getDiskPartitionTable(const struct ggeom *dis
 /**
  * @brief Return a list of GEOM objects representing the partitions in a table.
  */
-std::vector<const struct ggeom*> getPartitionObjs(const struct ggeom *table) {
-    std::vector<const struct ggeom*> result;
+std::vector<const struct gprovider*> getPartitionObjs(const struct ggeom *table) {
+    assert(QString(disk->lg_class->lg_name) == "PART");
 
+    std::vector<const struct gprovider*> result;
     struct gprovider *partition;
 
     // Enumerate geom objects representing partitions in the table
     LIST_FOREACH(partition, &table->lg_provider, lg_provider) {
-        result.push_back(partition->lg_geom);
+        result.push_back(partition);
     }
 
     return result;
@@ -85,22 +108,25 @@ std::vector<const struct ggeom*> getPartitionObjs(const struct ggeom *table) {
  * @brief Return a list of partitions mounted on a disk and its partitions.
  */
 QStringList getMountpointList(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
+
     QStringList mountpoints;
     const auto partitionTable = getDiskPartitionTable(disk);
     if (!partitionTable) {
         return mountpoints;
     }
 
-    std::vector<const struct ggeom*> partitionObjs = getPartitionObjs(*partitionTable);
+    std::vector<const struct gprovider*> partitionObjs = getPartitionObjs(*partitionTable);
     std::unordered_set<QString> partitions;
 
     for (const auto& obj : partitionObjs) {
-        partitions.insert(QString(obj->lg_name));
+        partitions.insert(QString(g_device_path(obj->lg_name)));
     }
 
     struct statfs *mntlist;
     int nmnt = getmntinfo(&mntlist, MNT_WAIT);
 
+    // Find mountpoints mounted on our partitions
     for (int i = 0; i < nmnt; i++) {
         QString from = mntlist[i].f_mntfromname;
         if (partitions.contains(from)) {
@@ -116,6 +142,7 @@ QStringList getMountpointList(const struct ggeom *disk) {
  * @brief Return a list of GEOM labels associated with a disk and its partitions.
  */
 QStringList getMountpointLabelList(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
 
     QStringList labels;
     const auto partitionTable = getDiskPartitionTable(disk);
@@ -123,7 +150,7 @@ QStringList getMountpointLabelList(const struct ggeom *disk) {
         return labels;
     }
 
-    std::vector<const struct ggeom*> partitionObjs = getPartitionObjs(*partitionTable);
+    std::vector<const struct gprovider*> partitionObjs = getPartitionObjs(*partitionTable);
 
     for (const auto& obj : partitionObjs) {
         auto label = getLabel(obj);
@@ -136,28 +163,14 @@ QStringList getMountpointLabelList(const struct ggeom *disk) {
 }
 
 /**
- * @brief Return the type (DISK, PART, etc.) of a GEOM device.
- */
-QString getDeviceType(const struct ggeom *device) {
-    const struct gconsumer *consumer;
-    const struct ggeom *consumerObj;
-
-    assert(QString(device->lg_class->lg_name) == "DEV");
-
-    consumer = LIST_FIRST(&device->lg_consumer);
-    consumerObj = consumer->lg_geom;
-
-    return QString(consumerObj->lg_class->lg_name);
-}
-
-/**
  * @brief Return the value associated with some key in the config of a GEOM.
  */
-std::optional<QString> getGeomConfig(const struct ggeom *gp, const QString& key) {
+template <typename T>
+std::optional<QString> getGeomConfig(const T *obj, const QString& key) {
     struct gconfig *confItem;
 
     // Search geom object config for a field matching item
-    LIST_FOREACH(confItem, &gp->lg_config, lg_config) {
+    LIST_FOREACH(confItem, &obj->lg_config, lg_config) {
         if (QString(confItem->lg_name) == key) {
             return QString(confItem->lg_val);
         }
@@ -169,11 +182,10 @@ std::optional<QString> getGeomConfig(const struct ggeom *gp, const QString& key)
 /**
  * @brief Query CAM to determine if a GEOM disk is removable.
  */
-bool isRemovable(const struct ggeom *gp) {
+bool isRemovable(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
 
-    assert(QString(gp->lg_class->lg_name) == "DISK");
-
-    const char *name = gp->lg_name;
+    const char *name = disk->lg_name;
     bool removable;
 
     struct cam_device *dev = cam_open_device(name, O_RDWR);
@@ -189,8 +201,10 @@ bool isRemovable(const struct ggeom *gp) {
 /**
  * @brief Query sysctl to determine if a GEOM disk is write-protected.
  */
-bool isReadOnly(const struct ggeom *gp) {
-    const char *name = gp->lg_name;
+bool isReadOnly(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
+
+    const char *name = disk->lg_name;
     const QString oid = QString::asprintf("kern.geom.disk.%s.flags", name);
 
     char oldp[1024];
@@ -199,9 +213,9 @@ bool isReadOnly(const struct ggeom *gp) {
         return false;
     }
 
-    QString rawFlagList = QString(oldp);
     // The string is of form be<flag1,flag2,...>. We wish to remove "^be<' and
     // ">$". Then, we may iterate over its tokens.
+    QString rawFlagList = QString(oldp);
     rawFlagList.slice(3, rawFlagList.length() - 4);
 
     QStringList flags = rawFlagList.split(u',');
@@ -213,8 +227,9 @@ bool isReadOnly(const struct ggeom *gp) {
 /**
  * @brief Determine if a GEOM disk represents a ramdisk rather than a physical drive.
  */
-bool isVirtual(const struct ggeom *gp) {
-    const struct gconsumer *consumer = LIST_FIRST(&gp->lg_consumer);
+bool isVirtual(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
+    const struct gconsumer *consumer = LIST_FIRST(&disk->lg_consumer);
     const struct ggeom *consumerObj = consumer->lg_geom;
     return QString(consumerObj->lg_class->lg_name) == "MD";
 }
@@ -222,9 +237,10 @@ bool isVirtual(const struct ggeom *gp) {
 /**
  * @brief Determine if a system folder is mounted on a given GEOM disk.
  */
-bool isBackingSystemPath(const struct ggeom *gp) {
+bool isBackingSystemPath(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
     std::unordered_set<QString> systemPaths = {"/", "/usr", "/var", "/home", "/boot"};
-    for (const auto& mountpoint : getMountpointList(gp)) {
+    for (const auto& mountpoint : getMountpointList(disk)) {
         if (systemPaths.contains(mountpoint)) {
             return true;
         }
@@ -237,6 +253,7 @@ bool isBackingSystemPath(const struct ggeom *gp) {
  * @brief Lookup through CAM the interface a disk uses.
  */
 cam_xport getTransportType(const struct ggeom *disk) {
+    assert(QString(disk->lg_class->lg_name) == "DISK");
     cam_xport transport = XPORT_UNKNOWN;
     union ccb *ccb = nullptr;
     struct cam_device *device = cam_open_device(disk->lg_name, O_RDWR);
@@ -370,7 +387,7 @@ std::string getDescription(const struct ggeom *gp) {
     // "(label1, label2, ...)"
     const auto partitionTable = getDiskPartitionTable(gp);
     if (partitionTable) {
-        std::vector<const struct ggeom*> partitionObjs = getPartitionObjs(*partitionTable);
+        std::vector<const struct gprovider*> partitionObjs = getPartitionObjs(*partitionTable);
         QStringList labels;
         for (const auto& obj : partitionObjs) {
             auto label = getLabel(obj);
