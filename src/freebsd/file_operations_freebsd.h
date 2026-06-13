@@ -76,7 +76,7 @@ class FreeBSDFileOperations : public FileOperations {
   // ============= TODO: Async I/O API (FreeBSD: using aio) =============
   bool SetAsyncQueueDepth(int depth) override;
   int GetAsyncQueueDepth() const override { return async_queue_depth_; }
-  bool IsAsyncIOSupported() const override { return false; }
+  bool IsAsyncIOSupported() const override { return true; }
   FileError AsyncWriteSequential(const std::uint8_t* data, std::size_t size,
                                   AsyncWriteCallback callback = nullptr) override;
   int GetPendingWriteCount() const override { return pending_writes_.load(); }
@@ -100,6 +100,7 @@ class FreeBSDFileOperations : public FileOperations {
   std::atomic<bool> cancelled_;
   FileError first_async_error_;
   std::uint64_t async_write_offset_;
+  kqueue_descr_;
 
   // Track callbacks by user_data pointer
   struct PendingWrite {
@@ -118,6 +119,8 @@ class FreeBSDFileOperations : public FileOperations {
   FileError OpenInternal(const char* path, int flags, mode_t mode = 0);
   static bool IsBlockDevicePath(const std::string& path);
 
+  bool InitKQ();
+  void CleanupKQ();
   void ProcessCompletions(bool wait);
   FileError AttemptSyncFallback() override;
   bool DrainAndSwitchToSync(int timeoutSeconds) override;
