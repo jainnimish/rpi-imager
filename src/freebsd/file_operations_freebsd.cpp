@@ -896,7 +896,7 @@ FileError FreeBSDFileOperations::AttemptSyncFallback() {
   return FileError::kSuccess;
 }
 
-bool FreeBSDFileOpeartions::DrainAndSwitchToSync(int stallTimeoutSeconds) {
+bool FreeBSDFileOperations::DrainAndSwitchToSync(int stallTimeoutSeconds) {
   // First, prevent new async writes by switching to sync mode
   sync_fallback_mode_ = true;
 
