@@ -22,7 +22,6 @@
 #include <signal.h>        // Signal masking for worker thread
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <ifaddr.h>
 #include <netlink/netlink.h>
 #include <netlink/netlink_route.h>
 #include <cstdio>
