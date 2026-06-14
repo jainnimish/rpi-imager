@@ -56,7 +56,7 @@ if [ "$SKIP_DEPENDENCIES" -eq 0 ]; then
         devel/evdev-proto textproc/py-cyclonedx-python-lib misc/py-spdx-tools \
         graphics/vulkan-headers x11/libICE x11/pixman \
         x11/libSM x11/libX11 \
-        x11/libXau x11/libxcb-dev x11/libXcomposite x11/libXcursor \
+        x11/libXau x11/libxcb x11/libXcomposite x11/libXcursor \
         x11/libXdamage x11/libXdmcp x11/libXext \
         x11/libXi x11/libXfixes x11/libXinerama \
         x11/libXrandr x11/libXrender accessibility/at-spi2-core \
