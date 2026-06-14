@@ -88,7 +88,7 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         return;
     }
 
-    struct kevent kevent;
+    struct kevent event;
     int ret;
     struct timespec timeout{};
 
@@ -99,7 +99,7 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         auto waitStart = std::chrono::steady_clock::now();
 
         // Don't use aio_waitcomplete because it blocks for *any* I/O request
-        ret = kevent(kqueue_descr_, NULL, 0, &kevent, 1, &timeout);
+        ret = kevent(kqueue_descr_, NULL, 0, &event, 1, &timeout);
         if (ret == -1) {
             std::ostringstream oss;
             oss << "aio: Couldn't fetch an event: " << strerror(errno);
@@ -115,7 +115,7 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
                     "ms, returning to allow recovery");
                 return;  // Return to caller so queue-wait timeout can trigger
             }
-            ret = kevent(kqueue_descr_, NULL, 0, &kevent, 1, &timeout);
+            ret = kevent(kqueue_descr_, NULL, 0, &event, 1, &timeout);
             if (ret == -1) {
                 std::ostringstream oss;
                 oss << "aio: Couldn't fetch an event: " << strerror(errno);
@@ -127,7 +127,7 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
     }
 
     while (true) {
-        ret = kevent(kqueue_descr_, NULL, 0, &kevent, 1, &timeout);
+        ret = kevent(kqueue_descr_, NULL, 0, &event, 1, &timeout);
 
         // If there are no events, we're done here.
         if (ret == 0)
@@ -139,8 +139,8 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
             return;
         }
 
-        auto write_id = (std::uint64_t)kevent.udata;
-        auto *iocb = static_cast<struct aiocb *>(kevent.ident);
+        auto write_id = (std::uint64_t)event.udata;
+        struct aiocb *iocb = (struct aiocb *)event.ident;
 
         // There's no point calling aio_error first, since we
         // shouldn't get EINPROGRESS if we're here.
@@ -696,7 +696,7 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
     // The kevent will return our aiocb and the write_id.
     struct sigevent sigev{};
     sigev.sigev_notify = SIGEV_KEVENT;
-    sigev.sigev_value = (void *)write_id; // Yes, dangerous, but ints are too small.
+    sigev.sigev_value.sival_ptr = (void *)write_id; // Yes, dangerous, but ints are too small.
     sigev.sigev_notify_kqueue = kqueue_descr_;
     iocb->aio_sigevent = sigev;
 
@@ -970,7 +970,7 @@ FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& pa
     size_t len = sizeof(val);
 
     // camcontrol has soft queue depth
-    dev = cam_open_device(path, O_RDWR);
+    dev = cam_open_device(path.c_str(), O_RDWR);
     if (dev == NULL)
         return limits;
 
@@ -991,7 +991,7 @@ FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& pa
         ccb->cgds.dev_active;
 
     // Get max single I/O
-    if(sysctlbyname("kern.maxphys", &val, &len, nullptr, nullptr) == -1) {
+    if(sysctlbyname("kern.maxphys", &val, &len, nullptr, 0) == -1) {
         goto bail;
     }
 
