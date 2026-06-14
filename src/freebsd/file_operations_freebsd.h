@@ -100,7 +100,7 @@ class FreeBSDFileOperations : public FileOperations {
   std::atomic<bool> cancelled_;
   FileError first_async_error_;
   std::uint64_t async_write_offset_;
-  kqueue_descr_;
+  int kqueue_descr_;
 
   // Track callbacks by user_data pointer
   struct PendingWrite {

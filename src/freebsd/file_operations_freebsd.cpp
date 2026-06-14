@@ -49,7 +49,7 @@ static void Log(const std::string& msg) {
 FreeBSDFileOperations::FreeBSDFileOperations()
     : fd_(-1), last_error_code_(0), using_direct_io_(false), direct_io_attempted_(false),
       async_queue_depth_(1), pending_writes_(0), cancelled_(false), first_async_error_(FileError::kSuccess),
-      kqueue_descr_(nullptr), async_write_offset_(0), next_write_id_(1) {  // Start at 1, 0 is reserved for cancel operations
+      kqueue_descr_(0), async_write_offset_(0), next_write_id_(1) {  // Start at 1, 0 is reserved for cancel operations
 }
 
 bool FreeBSDFileOperations::IsBlockDevicePath(const std::string& path) {
@@ -64,27 +64,27 @@ FreeBSDFileOperations::~FreeBSDFileOperations() {
 }
 
 bool FreeBSDFileOperations::InitKQ() {
-    if (kqueue_descr_ != nullptr)
+    if (kqueue_descr_ != 0)
         return true;
     if ((kqueue_descr_ = kqueue()) == -1) {
         std::ostringstream oss;
         oss << "kqueue() failed";
         Log(oss.str());
-        kqueue_descr_ = nullptr;
+        kqueue_descr_ = 0;
         return false;
     }
     return true;
 }
 
 void FreeBSDFileOperations::CleanupKQ() {
-    if (kqueue_descr_ != nullptr) {
+    if (kqueue_descr_ != 0) {
         (void)close(kqueue_descr_);
-        kqueue_descr_ = nullptr;
+        kqueue_descr_ = 0;
     }
 }
 
 void FreeBSDFileOperations::ProcessCompletions(bool wait) {
-    if (kqueue_descr_ == nullptr || pending_writes_.load() == 0) {
+    if (kqueue_descr_ == 0 || pending_writes_.load() == 0) {
         return;
     }
 
@@ -101,7 +101,9 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         // Don't use aio_waitcomplete because it blocks for *any* I/O request
         ret = kevent(kqueue_descr_, NULL, 0, &kevent, 1, &timeout);
         if (ret == -1) {
-            Log("aio: Couldn't fetch an event: " + strerror(errno));
+            std::ostringstream oss;
+            oss << "aio: Couldn't fetch an event: " << strerror(errno);
+            Log(oss.str());
             return;
         }
 
@@ -115,7 +117,9 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
             }
             ret = kevent(kqueue_descr_, NULL, 0, &kevent, 1, &timeout);
             if (ret == -1) {
-                Log("aio: Couldn't fetch an event: " + strerror(errno));
+                std::ostringstream oss;
+                oss << "aio: Couldn't fetch an event: " << strerror(errno);
+                Log(oss.str());
                 return;
             }
         }
@@ -129,12 +133,14 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         if (ret == 0)
             break;
         else if (ret == -1) {
-            Log("aio: Couldn't fetch an event: " + strerror(errno));
+            std::ostringstream oss;
+            oss << "aio: Couldn't fetch an event: " << strerror(errno);
+            Log(oss.str());
             return;
         }
 
         auto write_id = (std::uint64_t)kevent.udata;
-        auto *iocb = static_cast<struct aiocb>(kevent.ident);
+        auto *iocb = static_cast<struct aiocb *>(kevent.ident);
 
         // There's no point calling aio_error first, since we
         // shouldn't get EINPROGRESS if we're here.
@@ -624,9 +630,8 @@ int FreeBSDFileOperations::GetLastErrorCode() const {
 // ============= Async I/O Implementation (using aio + kqueue) =============
 
 bool FreeBSDFileOperations::SetAsyncQueueDepth(int depth) {
-    int old, olen, nlen;
-
-    olen = nlen = sizeof(int);
+    int old, nlen = sizeof(depth);
+    size_t olen = sizeof(old);
 
     // Since we're doing raw disk I/O, only set values for that pool
     if (sysctlbyname("vfs.aio.max_buf_aio", &old, &olen,
@@ -645,11 +650,11 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
 
     if(async_queue_depth_ <= 1 || sync_fallback_mode_) {
         FileError result = WriteSequential(data, size);
-        if (callback) callback(result, result == FileError:kSuccess ? size : 0);
+        if (callback) callback(result, result == FileError::kSuccess ? size : 0);
         return result;
     }
 
-    if (first_async_error_ != FileError:kSuccess) {
+    if (first_async_error_ != FileError::kSuccess) {
         if (callback) callback(first_async_error_, 0);
         return first_async_error_;
     }
@@ -681,9 +686,9 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
     pending_writes_.fetch_add(1);
 
     // Set up aiocb for the write
-    struct aiocb *iocb = std::calloc(1, sizeof(struct aiocb));
+    auto *iocb = static_cast<struct aiocb *>(std::calloc(1, sizeof(struct aiocb)));
     iocb->aio_fildes = fd_;
-    iocb->aio_buf = data;
+    iocb->aio_buf = const_cast<std::uint8_t*>(data); // aio won't change it
     iocb->aio_nbytes = static_cast<size_t>(size);
     iocb->aio_offset = static_cast<off_t>(write_offset);
 
@@ -691,7 +696,7 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
     // The kevent will return our aiocb and the write_id.
     struct sigevent sigev{};
     sigev.sigev_notify = SIGEV_KEVENT;
-    sigev.sigev_value = (int *)write_id; // Yes, dangerous, but ints are too small.
+    sigev.sigev_value = (void *)write_id; // Yes, dangerous, but ints are too small.
     sigev.sigev_notify_kqueue = kqueue_descr_;
     iocb->aio_sigevent = sigev;
 
@@ -729,7 +734,7 @@ void FreeBSDFileOperations::CancelAsyncIO() {
 
 
 FileError FreeBSDFileOperations::WaitForPendingWrites() {
-  if (fd < 0 || kqueue_descr_ == nullptr) {
+  if (kqueue_descr_ == 0) {
     return FileError::kSuccess;
   }
 
@@ -959,12 +964,13 @@ void FreeBSDFileOperations::ReduceQueueDepthForRecovery(int newDepth) {
 
 FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) {
     FileOperations::DeviceIOLimits limits;
-    const struct cam_device *dev;
+    struct cam_device *dev;
     union ccb *ccb;
-    int val{}, len{sizeof(int)};
+    int val;
+    size_t len = sizeof(val);
 
     // camcontrol has soft queue depth
-    dev = cam_open_device(name, O_RDWR);
+    dev = cam_open_device(path, O_RDWR);
     if (dev == NULL)
         return limits;
 
@@ -975,7 +981,7 @@ FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& pa
     CCB_CLEAR_ALL_EXCEPT_HDR(&ccb->cgds);
 
 	ccb->ccb_h.func_code = XPT_GDEV_STATS;
-	if (cam_send_ccb(device, ccb) < 0)
+	if (cam_send_ccb(dev, ccb) < 0)
 		goto bail;
 
 	if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)
