@@ -696,7 +696,11 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
     // The kevent will return our aiocb and the write_id.
     struct sigevent sigev{};
     sigev.sigev_notify = SIGEV_KEVENT;
+<<<<<<< HEAD
     sigev.sigev_value.sival_ptr = (void *)write_id; // Yes, dangerous, but ints are too small.
+=======
+    sigev.sigev_value = (void *)write_id; // Yes, dangerous, but ints are too small.
+>>>>>>> 6a5988fc (Attempt to fix build errors)
     sigev.sigev_notify_kqueue = kqueue_descr_;
     iocb->aio_sigevent = sigev;
 
@@ -970,7 +974,11 @@ FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& pa
     size_t len = sizeof(val);
 
     // camcontrol has soft queue depth
+<<<<<<< HEAD
     dev = cam_open_device(path.c_str(), O_RDWR);
+=======
+    dev = cam_open_device(path, O_RDWR);
+>>>>>>> 6a5988fc (Attempt to fix build errors)
     if (dev == NULL)
         return limits;
 
