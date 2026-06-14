@@ -1000,7 +1000,7 @@ DiskResult unmountDisk(const QString& device) {
     bool foundPartition = false;
 
     if (devicePath == NULL) {
-        qDebug() << "unmountDisk: Device with name '"
+        qDebug() << "PlatformQuirks::unmountDisk: Device with name '"
                  << devicePath
                  << "' does not appear to exist in the geom hierarchy";
         return DiskResult::InvalidDrive;
@@ -1008,7 +1008,13 @@ DiskResult unmountDisk(const QString& device) {
 
     std::vector<struct gprovider*> mountPartitions;
 
-    geom_gettree(&devtree);
+    int error = geom_gettree(&devtree);
+    if (error != 0) {
+        qWarning() << "PlatformQuirks::unmountDisk: Failed to open GEOM device tree"
+                   << ", &devtree=" << &devtree
+                   << ", errno=" << error << " (" << std::strerror(error) << ")";
+        return DiskResult::Error;
+    }
     LIST_FOREACH(geom_class, &devtree.lg_class, lg_class) {
         if (QString(geom_class->lg_name) != "PART") {
             continue;
@@ -1054,14 +1060,14 @@ DiskResult unmountDisk(const QString& device) {
     for (const auto partition : mountPartitions) {
         char *unmountPath = g_device_path(partition->lg_name);
         if (unmount(unmountPath, 0) == -1) {
-            qDebug() << "unmountDisk: unmounted" << unmountPath << "(normal, first try)";
+            qDebug() << "PlatformQuirks::unmountDisk: unmounted" << unmountPath << "(normal, first try)";
         } else if (unmount(unmountPath, 0) == -1) {
-            qDebug() << "unmountDisk: unmounted" << unmountPath << "(normal, second try)";
+            qDebug() << "PlatformQuirks::unmountDisk: unmounted" << unmountPath << "(normal, second try)";
         } else if (unmount(unmountPath, MNT_FORCE) == -1) {
-            qDebug() << "unmountDisk: unmounted" << unmountPath << "(MNT_FORCE; may lead to data loss)";
+            qDebug() << "PlatformQuirks::unmountDisk: unmounted" << unmountPath << "(MNT_FORCE; may lead to data loss)";
         } else {
             failedUnmounts.push_back(partition);
-            qWarning() << "unmountDisk: Failed to unmount partition"
+            qWarning() << "PlatformQuirks::unmountDisk: Failed to unmount partition"
                        << ", partition name=" << partition->lg_name
                        << ", errno=" << errno << " (" << std::strerror(errno) << ")";
         }
@@ -1070,7 +1076,7 @@ DiskResult unmountDisk(const QString& device) {
     if (failedUnmounts.size() == 0) {
         return DiskResult::Success;
     } else if (failedUnmounts.size() < mountPartitions.size()) {
-        qWarning() << "unmountDisk: Partial failure"
+        qWarning() << "PlatformQuirks::unmountDisk: Partial failure"
                    << ", total=" << mountPartitions.size()
                    << ", failed=" << failedUnmounts.size()
                    << ", failed list:";
@@ -1079,7 +1085,7 @@ DiskResult unmountDisk(const QString& device) {
             qWarning() << " -" << g_device_path(failed->lg_name);
         }
     } else {
-        qWarning() << "unmountDisk: Failed to unmount all partitions"
+        qWarning() << "PlatformQuirks::unmountDisk: Failed to unmount all partitions"
                    << ", total=" << mountPartitions.size();
     }
     return DiskResult::Busy;

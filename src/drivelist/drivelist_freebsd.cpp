@@ -21,10 +21,12 @@
 #include <algorithm>
 #include <array>
 #include <unordered_set>
+#include <iostream>
 #include <vector>
 #include <optional>
 #include <cassert>
 #include <QString>
+#include <QDebug>
 #include <QStringList>
 
 namespace Drivelist {
@@ -487,7 +489,13 @@ std::vector<DeviceDescriptor> ListStorageDevices()
     struct gclass *geom_class;
     struct ggeom *obj;
 
-    geom_gettree(&devtree);
+    int error = geom_gettree(&devtree);
+    if (error != 0) {
+        qWarning() << "Drivelist::ListStorageDevices: Failed to open GEOM device tree"
+                   << ", &devtree=" << &devtree
+                   << ", errno=" << error << " (" << std::strerror(error) << ")";
+        return deviceList;
+    }
 
     LIST_FOREACH(geom_class, &devtree.lg_class, lg_class) {
         if (QString(geom_class->lg_name) != "DISK") {
