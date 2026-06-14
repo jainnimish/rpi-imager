@@ -13,11 +13,6 @@
 #ifdef Q_OS_LINUX
 #include <linux/wireless.h>
 #endif
-#ifdef Q_OS_BSD4
-#include <net/if.h>
-#include <net80211/ieee80211.h>
-#include <net80211/ieee80211_ioctl.h>
-#endif
 
 #ifndef QT_NO_DBUS
 #include <QDBusMetaType>
