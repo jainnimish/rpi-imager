@@ -951,23 +951,39 @@ QString getEjectDevicePath(const QString& devicePath) {
     return devicePath;
 }
 
-static bool isDisk(const char* devicePath) {
+static bool isDisk(const QString& device) {
     QByteArray deviceBytes = device.toUtf8();
-    const char* devicePath = deviceBytes.constData();
+    QString devicePath = g_device_path(deviceBytes.constData());
 
-    // Verify device exists and is not a directory
-    struct stat stats;
-    if (stat(devicePath, &stats) != 0) {
-        int savedErrno = errno;
-        qWarning() << "isDisk: stat failed for" << device << "-" << strerror(savedErrno);
+    struct gmesh devtree;
+    struct gclass *geom_class;
+    struct ggeom *geom;
+
+    bool found = false;
+
+    int error = geom_gettree(&devtree);
+    if (error != 0) {
+        qWarning() << "PlatformQuirks::isDisk: Failed to open GEOM device tree"
+                   << ", &devtree=" << &devtree
+                   << ", errno=" << error << " (" << std::strerror(error) << ")";
         return false;
     }
-    if (S_ISDIR(stats.st_mode)) {
-        qWarning() << "isDisk: path is a directory, not a device:" << device;
-        return false;
+
+    LIST_FOREACH(geom_class, &devtree.lg_class, lg_class) {
+        if (QString(geom_class->lg_name) == "DISK") {
+            LIST_FOREACH(geom, &geom_class->lg_geom, lg_geom) {
+                found = (g_device_path(geom->lg_name) == devicePath);
+
+                if (found) {
+                    break;
+                }
+            }
+
+            break;
+        }
     }
 
-    return true;
+    return found;
 }
 
 DiskResult unmountDisk(const QString& device) {
