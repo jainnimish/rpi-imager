@@ -26,7 +26,7 @@ LIB_DEPENDS=   libgnutls.so:security/gnutls \
 			         libnettle.so:security/nettle
 
 USES=   qt:6 cmake pkgconfig desktop-file-utils
-USE_QT=	core network imageformats_run
+USE_QT=	core network imageformats_run buildtools_build
 
 .if ${FLAVOR} == gui
 USE_QT+= gui widgets svg quickcontrols2 declarative dbus
