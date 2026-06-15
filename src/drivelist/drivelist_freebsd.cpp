@@ -62,6 +62,9 @@ std::optional<QString> getLabel(const struct ggeom *disk) {
     struct gprovider *provider;
 
     LIST_FOREACH(provider, &disk->lg_provider, lg_provider) {
+        if (QString(provider->lg_geom->lg_class->lg_name) != "PART") {
+            continue;
+        }
         auto label = getLabel(provider);
         if (label) {
             return *label;
@@ -379,9 +382,12 @@ std::string getDescription(const struct ggeom *gp) {
         }
     };
 
-    const auto description = getGeomConfig(gp, "descr");
-    if (description) {
-        addIfNotEmpty(descParts, *description);
+    const struct gprovider *provider = LIST_FIRST(&gp->lg_provider);
+    if (provider) {
+        const auto description = getGeomConfig(provider, "descr");
+        if (description) {
+            addIfNotEmpty(descParts, *description);
+        }
     }
 
     const auto label = getLabel(gp);
@@ -470,8 +476,9 @@ std::optional<DeviceDescriptor> parseDiskDevice(const struct ggeom *disk)
         device.mountpointLabels.push_back(mountpointLabel.toStdString());
     }
 
-    device.size = static_cast<uint64_t>(LIST_FIRST(&disk->lg_provider)->lg_mediasize);
-    device.blockSize = static_cast<uint32_t>(LIST_FIRST(&disk->lg_provider)->lg_sectorsize);
+    const struct gprovider *provider = LIST_FIRST(&disk->lg_provider);
+    device.size = static_cast<uint64_t>(provider != nullptr ? provider->lg_mediasize : 0);
+    device.blockSize = static_cast<uint32_t>(provider != nullptr ? provider->lg_sectorsize :0);
     device.logicalBlockSize = device.blockSize; // TODO: LOG-SEC
 
     device.description = getDescription(disk);
