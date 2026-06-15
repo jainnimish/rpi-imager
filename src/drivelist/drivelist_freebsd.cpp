@@ -58,7 +58,8 @@ std::optional<QString> getLabel(const struct gprovider *partition) {
  * @brief Return the label associated with a GEOM disk, if it exists.
  */
 std::optional<QString> getLabel(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
     struct gprovider *provider;
 
     LIST_FOREACH(provider, &disk->lg_provider, lg_provider) {
@@ -78,7 +79,8 @@ std::optional<QString> getLabel(const struct ggeom *disk) {
  * @brief Return the GEOM object representing a disk's partition table, if it exists.
  */
 std::optional<const struct ggeom*> getDiskPartitionTable(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
 
     struct gprovider *provider;
     struct gconsumer *consumer;
@@ -117,7 +119,8 @@ std::vector<const struct gprovider*> getPartitionObjs(const struct ggeom *table)
  * @brief Return a list of partitions mounted on a disk and its partitions.
  */
 QStringList getMountpointList(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
 
     QStringList mountpoints;
     const auto partitionTable = getDiskPartitionTable(disk);
@@ -151,7 +154,8 @@ QStringList getMountpointList(const struct ggeom *disk) {
  * @brief Return a list of GEOM labels associated with a disk and its partitions.
  */
 QStringList getMountpointLabelList(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
 
     QStringList labels;
     const auto partitionTable = getDiskPartitionTable(disk);
@@ -192,7 +196,8 @@ std::optional<QString> getGeomConfig(const T *obj, const QString& key) {
  * @brief Query CAM to determine if a GEOM disk is removable.
  */
 bool isRemovable(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
 
     const char *name = disk->lg_name;
     bool removable;
@@ -211,7 +216,8 @@ bool isRemovable(const struct ggeom *disk) {
  * @brief Query sysctl to determine if a GEOM disk is write-protected.
  */
 bool isReadOnly(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
 
     const char *name = disk->lg_name;
     const QString oid = QString::asprintf("kern.geom.disk.%s.flags", name);
@@ -237,17 +243,17 @@ bool isReadOnly(const struct ggeom *disk) {
  * @brief Determine if a GEOM disk represents a ramdisk rather than a physical drive.
  */
 bool isVirtual(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
-    const struct gconsumer *consumer = LIST_FIRST(&disk->lg_consumer);
-    const struct ggeom *consumerObj = consumer->lg_geom;
-    return QString(consumerObj->lg_class->lg_name) == "MD";
+    assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
+    return QString(disk->lg_class->lg_name) == "MD";
 }
 
 /**
  * @brief Determine if a system folder is mounted on a given GEOM disk.
  */
 bool isBackingSystemPath(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+	assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
     std::unordered_set<QString> systemPaths = {"/", "/usr", "/var", "/home", "/boot"};
     for (const auto& mountpoint : getMountpointList(disk)) {
         if (systemPaths.contains(mountpoint)) {
@@ -262,7 +268,8 @@ bool isBackingSystemPath(const struct ggeom *disk) {
  * @brief Lookup through CAM the interface a disk uses.
  */
 cam_xport getTransportType(const struct ggeom *disk) {
-    assert(QString(disk->lg_class->lg_name) == "DISK");
+	assert(QString(disk->lg_class->lg_name) == "DISK" ||
+		   QString(disk->lg_class->lg_name) == "MD");
     cam_xport transport = XPORT_UNKNOWN;
     union ccb *ccb = nullptr;
     struct cam_device *device = cam_open_device(disk->lg_name, O_RDWR);
@@ -430,7 +437,7 @@ std::string getDescription(const struct ggeom *gp) {
 bool isUndesiredDeviceType(const struct ggeom *disk) {
     struct cam_device *device = cam_open_device(disk->lg_name, O_RDWR);
     if (device == nullptr) {
-        return true;
+        return false;
     }
 
     std::array<uint8_t, 2> opticalTypes{T_OPTICAL, T_CDROM};
@@ -494,11 +501,20 @@ std::optional<DeviceDescriptor> parseDiskDevice(const struct ggeom *disk)
 
 std::vector<DeviceDescriptor> ListStorageDevices()
 {
+	const std::array<QString, 2> validDiskTypes{
+		"DISK",
+		"MD"
+    };
+
     std::vector<DeviceDescriptor> deviceList;
 
     struct gmesh devtree;
     struct gclass *geom_class;
-    struct ggeom *obj;
+    struct ggeom *device;
+	struct ggeom *disk;
+	struct gconsumer *consumer;
+	struct gprovider *provider;
+	QString type;
 
     int error = geom_gettree(&devtree);
     if (error != 0) {
@@ -509,16 +525,34 @@ std::vector<DeviceDescriptor> ListStorageDevices()
     }
 
     LIST_FOREACH(geom_class, &devtree.lg_class, lg_class) {
-        if (QString(geom_class->lg_name) != "DISK") {
+        if (QString(geom_class->lg_name) != "DEV") {
             continue;
         }
 
-        LIST_FOREACH(obj, &geom_class->lg_geom, lg_geom) {
-            auto device = parseDiskDevice(obj);
-            if (device) {
-                deviceList.push_back(std::move(*device));
+        LIST_FOREACH(device, &geom_class->lg_geom, lg_geom) {
+			consumer = LIST_FIRST(&device->lg_consumer);
+			if (consumer == nullptr) {
+				continue;
+			}
+			provider = consumer->lg_provider;
+			if (provider == nullptr) {
+				continue;
+			}
+
+			disk = provider->lg_geom;
+			type = disk->lg_class->lg_name;
+			if (std::none_of(validDiskTypes.cbegin(), validDiskTypes.cend(),
+							 [&type](const QString& i) { return i == type; })) {
+				continue;
+			}
+
+            auto deviceInfo = parseDiskDevice(disk);
+            if (deviceInfo) {
+                deviceList.push_back(std::move(*deviceInfo));
             }
         }
+
+        break;
     }
 
     geom_deletetree(&devtree);
