@@ -10,10 +10,8 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/disk.h>
-#include <sys/aio.h>
 #include <sys/sysctl.h>
-#include <sys/event.h>
-#include <signal.h>
+#include <aio.h>
 #include <errno.h>
 #include <iostream>
 #include <sstream>
@@ -49,7 +47,7 @@ static void Log(const std::string& msg) {
 FreeBSDFileOperations::FreeBSDFileOperations()
     : fd_(-1), last_error_code_(0), using_direct_io_(false), direct_io_attempted_(false),
       async_queue_depth_(1), pending_writes_(0), cancelled_(false), first_async_error_(FileError::kSuccess),
-      kqueue_descr_(0), async_write_offset_(0), next_write_id_(1) {  // Start at 1, 0 is reserved for cancel operations
+      async_write_offset_(0), next_write_id_(0) {
 }
 
 bool FreeBSDFileOperations::IsBlockDevicePath(const std::string& path) {
@@ -60,36 +58,15 @@ bool FreeBSDFileOperations::IsBlockDevicePath(const std::string& path) {
 FreeBSDFileOperations::~FreeBSDFileOperations() {
   WaitForPendingWrites();
   Close();
-  CleanupKQ();
-}
-
-bool FreeBSDFileOperations::InitKQ() {
-    if (kqueue_descr_ != 0)
-        return true;
-    if ((kqueue_descr_ = kqueue()) == -1) {
-        std::ostringstream oss;
-        oss << "kqueue() failed";
-        Log(oss.str());
-        kqueue_descr_ = 0;
-        return false;
-    }
-    return true;
-}
-
-void FreeBSDFileOperations::CleanupKQ() {
-    if (kqueue_descr_ != 0) {
-        (void)close(kqueue_descr_);
-        kqueue_descr_ = 0;
-    }
 }
 
 void FreeBSDFileOperations::ProcessCompletions(bool wait) {
-    if (kqueue_descr_ == 0 || pending_writes_.load() == 0) {
+    if (pending_writes_.load() == 0 || async_queue_depth_ == 1) {
         return;
     }
 
-    struct kevent event;
-    int ret;
+    ssize_t result;
+    struct aiocb *iocb{};
     struct timespec timeout{};
 
     if (wait && !cancelled_.load()) {
@@ -98,9 +75,9 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         timeout.tv_nsec = 100000000; // 100ms
         auto waitStart = std::chrono::steady_clock::now();
 
-        // Don't use aio_waitcomplete because it blocks for *any* I/O request
-        ret = kevent(kqueue_descr_, NULL, 0, &event, 1, &timeout);
-        if (ret == -1) {
+recheck:
+        if ((result = aio_waitcomplete(&iocb, &timeout)) == -1 &&
+            errno != EINPROGRESS && iocb == nullptr) {
             std::ostringstream oss;
             oss << "aio: Couldn't fetch an event: " << strerror(errno);
             Log(oss.str());
@@ -108,44 +85,34 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         }
 
         // If timeout, try again with overall limit
-        while (ret == 0 && !cancelled_.load() && pending_writes_.load() > 0) {
+        if (iocb == nullptr && !cancelled_.load() && pending_writes_.load() > 0) {
             auto elapsed = std::chrono::steady_clock::now() - waitStart;
             if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() >= kAsyncFirstCompletionTimeoutMs) {
                 Log("ProcessCompletions: No completion received in " + std::to_string(kAsyncFirstCompletionTimeoutMs) +
                     "ms, returning to allow recovery");
                 return;  // Return to caller so queue-wait timeout can trigger
             }
-            ret = kevent(kqueue_descr_, NULL, 0, &event, 1, &timeout);
-            if (ret == -1) {
-                std::ostringstream oss;
-                oss << "aio: Couldn't fetch an event: " << strerror(errno);
-                Log(oss.str());
-                return;
-            }
+            goto recheck;
         }
         timeout.tv_nsec = 0;
+    } else {
+        result = aio_waitcomplete(&iocb, &timeout);
     }
 
-    while (true) {
-        ret = kevent(kqueue_descr_, NULL, 0, &event, 1, &timeout);
-
-        // If there are no events, we're done here.
-        if (ret == 0)
-            break;
-        else if (ret == -1) {
+    while(true) {
+        if (errno != EINPROGRESS && errno != EAGAIN) {
             std::ostringstream oss;
             oss << "aio: Couldn't fetch an event: " << strerror(errno);
             Log(oss.str());
             return;
         }
 
-        auto write_id = (std::uint64_t)event.udata;
-        struct aiocb *iocb = (struct aiocb *)event.ident;
+        if (iocb == nullptr)
+            break;
 
-        // There's no point calling aio_error first, since we
-        // shouldn't get EINPROGRESS if we're here.
-        ssize_t result = aio_return(iocb);
+        auto write_id = (std::uint64_t)iocb->aio_sigevent.sigev_value.sival_ptr;
         std::free(iocb);
+        iocb = nullptr;
 
         AsyncWriteCallback callback = nullptr;
         std::size_t expected_size = 0;
@@ -195,17 +162,11 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
 
         FileError error = FileError::kWriteError;
         if (result == -1) {
-            std::ostringstream oss;
-
-            if (errno == EINVAL) {
-                oss << "aio_return: Failed to get completion status or write failed: " << strerror(errno);
-            } else if (errno == ECANCELED) {
-                // I don't see how we can get here.
-                // write() never returns this error code, and aio_cancel can never be called.
-                error = FileError::kCancelled;
-            } else {
-                oss << "aio_write failed with error: " << strerror(errno);
+            if (first_async_error_ == FileError::kSuccess) {
+                first_async_error_ = error;
             }
+            std::ostringstream oss;
+            oss << "aio_write failed with error: " << strerror(errno);
             Log(oss.str());
         } else if (static_cast<std::size_t>(result) != expected_size) {
             if (first_async_error_ == FileError::kSuccess) {
@@ -223,6 +184,7 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         }
 
         pending_writes_.fetch_sub(1);
+        result = aio_waitcomplete(&iocb, &timeout);
     }
 }
 
@@ -627,7 +589,7 @@ int FreeBSDFileOperations::GetLastErrorCode() const {
     return last_error_code_;
 }
 
-// ============= Async I/O Implementation (using aio + kqueue) =============
+// ============= Async I/O Implementation (using aio) =============
 
 bool FreeBSDFileOperations::SetAsyncQueueDepth(int depth) {
     int old, nlen = sizeof(depth);
@@ -659,7 +621,6 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
         return first_async_error_;
     }
 
-    // Maybe there's an event in the kqueue for us
     ProcessCompletions(false);
 
     while (pending_writes_.load() >= async_queue_depth_) {
@@ -688,16 +649,14 @@ FileError FreeBSDFileOperations::AsyncWriteSequential(const std::uint8_t* data, 
     // Set up aiocb for the write
     auto *iocb = static_cast<struct aiocb *>(std::calloc(1, sizeof(struct aiocb)));
     iocb->aio_fildes = fd_;
-    iocb->aio_buf = const_cast<std::uint8_t*>(data); // aio won't change it
+    iocb->aio_buf = const_cast<std::uint8_t*>(data);
     iocb->aio_nbytes = static_cast<size_t>(size);
     iocb->aio_offset = static_cast<off_t>(write_offset);
 
-    // Set up the sigevent
-    // The kevent will return our aiocb and the write_id.
+    // Set up the sigevent with our write_id
     struct sigevent sigev{};
-    sigev.sigev_notify = SIGEV_KEVENT;
-    sigev.sigev_value.sival_ptr = (void *)write_id; // Yes, dangerous, but ints are too small.
-    sigev.sigev_notify_kqueue = kqueue_descr_;
+    sigev.sigev_notify = SIGEV_NONE;
+    sigev.sigev_value.sival_ptr = (void *)write_id;
     iocb->aio_sigevent = sigev;
 
     // Attempt to queue it
@@ -734,9 +693,8 @@ void FreeBSDFileOperations::CancelAsyncIO() {
 
 
 FileError FreeBSDFileOperations::WaitForPendingWrites() {
-  if (kqueue_descr_ == 0) {
+  if (async_queue_depth_ == 1)
     return FileError::kSuccess;
-  }
 
   // Wait for pending writes to complete or be cancelled.
   //
