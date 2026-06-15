@@ -73,7 +73,7 @@ class FreeBSDFileOperations : public FileOperations {
       return info;
   }
 
-  // ============= TODO: Async I/O API (FreeBSD: using aio) =============
+  // ============= Async I/O API (FreeBSD: using aio) =============
   bool SetAsyncQueueDepth(int depth) override;
   int GetAsyncQueueDepth() const override { return async_queue_depth_; }
   bool IsAsyncIOSupported() const override { return true; }

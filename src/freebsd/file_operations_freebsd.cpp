@@ -61,7 +61,7 @@ FreeBSDFileOperations::~FreeBSDFileOperations() {
 }
 
 void FreeBSDFileOperations::ProcessCompletions(bool wait) {
-    if (pending_writes_.load() == 0 || async_queue_depth_ == 1) {
+    if (pending_writes_.load() == 0) {
         return;
     }
 
@@ -76,12 +76,14 @@ void FreeBSDFileOperations::ProcessCompletions(bool wait) {
         auto waitStart = std::chrono::steady_clock::now();
 
 recheck:
+        // We don't wait unless at least one write has been queued,
+        // so EAGAIN shouldn't be possible.
         if ((result = aio_waitcomplete(&iocb, &timeout)) == -1 &&
             errno != EINPROGRESS && iocb == nullptr) {
             std::ostringstream oss;
-            oss << "aio: Couldn't fetch an event: " << strerror(errno);
+            oss << "aio_waitcomplete: Couldn't fetch an event: " << strerror(errno)
+                << " - trying again.";
             Log(oss.str());
-            return;
         }
 
         // If timeout, try again with overall limit
@@ -100,15 +102,16 @@ recheck:
     }
 
     while(true) {
-        if (errno != EINPROGRESS && errno != EAGAIN) {
+        // This must be an error with aio_waitcomplete since
+        // an error with aio_write should return a valid aiocb.
+        if (iocb == nullptr) {
+            if (errno == EINPROGRESS || errno == EAGAIN)
+                break;
             std::ostringstream oss;
-            oss << "aio: Couldn't fetch an event: " << strerror(errno);
+            oss << "aio_waitcomplete: Couldn't fetch an event: " << strerror(errno);
             Log(oss.str());
             return;
         }
-
-        if (iocb == nullptr)
-            break;
 
         auto write_id = (std::uint64_t)iocb->aio_sigevent.sigev_value.sival_ptr;
         std::free(iocb);
@@ -693,9 +696,6 @@ void FreeBSDFileOperations::CancelAsyncIO() {
 
 
 FileError FreeBSDFileOperations::WaitForPendingWrites() {
-  if (async_queue_depth_ == 1)
-    return FileError::kSuccess;
-
   // Wait for pending writes to complete or be cancelled.
   //
   // DESIGN: Stall detection is handled by WriteProgressWatchdog at the ImageWriter level.
@@ -706,11 +706,6 @@ FileError FreeBSDFileOperations::WaitForPendingWrites() {
   int lastLogSecond = 0;
 
   while (pending_writes_.load() > 0) {
-    // Check cancellation
-    if (cancelled_.load()) {
-      CancelAsyncIO();
-    }
-
     ProcessCompletions(true);
 
     // Emergency safety-net: if we've been waiting 5 minutes, something is very wrong
