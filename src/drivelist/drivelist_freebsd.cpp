@@ -37,13 +37,17 @@ namespace {
  * @brief Return the label associated with a GEOM provider, if it exists.
  */
 std::optional<QString> getLabel(const struct gprovider *partition) {
-    assert(QString(partition->lg_class->lg_name) == "PART");
+    assert(QString(partition->lg_geom->lg_class->lg_name) == "PART");
 
     struct gconsumer *consumer;
+	struct ggeom *label;
+	struct gprovider *provider;
 
     LIST_FOREACH(consumer, &partition->lg_consumers, lg_consumer) {
-        if (QString(consumer->lg_geom->lg_class->lg_name) == "LABEL") {
-            return consumer->lg_geom->lg_name;
+		label = consumer->lg_geom;
+        if (QString(label->lg_class->lg_name) == "LABEL") {
+			provider = LIST_FIRST(&label->lg_provider);
+            return provider->lg_name;
         }
     }
 
@@ -93,7 +97,7 @@ std::optional<const struct ggeom*> getDiskPartitionTable(const struct ggeom *dis
  * @brief Return a list of GEOM objects representing the partitions in a table.
  */
 std::vector<const struct gprovider*> getPartitionObjs(const struct ggeom *table) {
-    assert(QString(disk->lg_class->lg_name) == "PART");
+    assert(QString(table->lg_class->lg_name) == "PART");
 
     std::vector<const struct gprovider*> result;
     struct gprovider *partition;
