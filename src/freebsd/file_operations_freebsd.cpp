@@ -410,6 +410,13 @@ FileError FreeBSDFileOperations::OpenInternal(const char* path, int flags, mode_
 
     fd_ = open(path, flags, mode);
     if (fd_ < 0) {
+        std::cerr << "FreeBSDFileOperations::OpenInternal: "
+                  << "Failed to open file"
+                  << ", path=" << path
+                  << ", flags=" << flags
+                  << ", mode=" << mode
+                  << ", errno=" << errno << " (" << std::strerror(errno) << ")"
+                  << std::endl;
         last_error_code_ = errno;
         return FileError::kOpenError;
     }

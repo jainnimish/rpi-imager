@@ -461,7 +461,7 @@ std::optional<DeviceDescriptor> parseDiskDevice(const struct ggeom *disk)
         return std::nullopt;
     }
 
-    const QString name = disk->lg_name;
+    const QString name = g_device_path(disk->lg_name);
     device.device = name.toStdString();
     device.raw = name.toStdString();
 
