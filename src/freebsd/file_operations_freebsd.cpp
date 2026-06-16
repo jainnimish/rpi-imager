@@ -47,7 +47,7 @@ static void Log(const std::string& msg) {
 FreeBSDFileOperations::FreeBSDFileOperations()
     : fd_(-1), last_error_code_(0), using_direct_io_(false), direct_io_attempted_(false),
       async_queue_depth_(1), pending_writes_(0), cancelled_(false), first_async_error_(FileError::kSuccess),
-      async_write_offset_(0), next_write_id_(0) {
+      async_write_offset_(0), next_write_id_(0), is_destr_(0) {
 }
 
 bool FreeBSDFileOperations::IsBlockDevicePath(const std::string& path) {
@@ -56,7 +56,7 @@ bool FreeBSDFileOperations::IsBlockDevicePath(const std::string& path) {
 }
 
 FreeBSDFileOperations::~FreeBSDFileOperations() {
-  WaitForPendingWrites();
+  is_destr_ = 1;
   Close();
 }
 
@@ -758,12 +758,15 @@ std::vector<FileOperations::PendingWriteInfo> FreeBSDFileOperations::GetPendingW
   return result;
 }
 
-// I don't know if edge cases exist where the aio request hangs,
-// so, it should be okay to rewrite sync requests. At worst,
-// we will write the same buffer twice. If even after 5 minutes
-// nothing was returned, there is certainly something worse than aio happening.
+// DESIGN:
+// Since aio_cancel doesn't operate on raw disk I/O,
+// we can only force future writes to sync. Dealing with pending_writes_
+// and callbacks must be deferred to when the destructor is called.
+// Another possible solution is to copy the data
+// buffer which is passed in the aiocb, but this comes with a
+// heavy performance penalty. Both solutions still require
+// polling to free the aiocb structures.
 FileError FreeBSDFileOperations::AttemptSyncFallback() {
-  // Get pending writes before cancelling (they're still valid in ring buffer)
   auto pendingWrites = GetPendingWritesSorted();
 
   if (pendingWrites.empty()) {
@@ -780,12 +783,14 @@ FileError FreeBSDFileOperations::AttemptSyncFallback() {
   // Switch to sync mode for all future writes
   sync_fallback_mode_ = true;
 
-  // Clear the pending callbacks (we'll handle them synchronously)
-  {
-    std::lock_guard<std::mutex> lock(pending_mutex_);
-    pending_callbacks_.clear();
+  if (is_destr_) {
+    // Clear the pending callbacks (we'll handle them synchronously)
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_callbacks_.clear();
+    }
+    pending_writes_.store(0);
   }
-  pending_writes_.store(0);
 
   // Replay pending writes synchronously with timeout protection
   for (const auto& pw : pendingWrites) {
@@ -796,12 +801,6 @@ FileError FreeBSDFileOperations::AttemptSyncFallback() {
           written = pwrite(fd_, pw.data, pw.size, static_cast<off_t>(pw.offset));
         },
         TimeoutConfig(kSyncWriteTimeoutSeconds)
-            .withOnTimeout([this, &pw]() {
-              Log("Timeout: write at offset " + std::to_string(pw.offset) + " - closing fd");
-              int fd_copy = fd_;
-              fd_ = -1;
-              close(fd_copy);
-            })
     );
 
     if (result == TimeoutResult::TimedOut) {
@@ -814,7 +813,7 @@ FileError FreeBSDFileOperations::AttemptSyncFallback() {
       return FileError::kWriteError;
     }
 
-    if (pw.callback) {
+    if (is_destr_ && pw.callback) {
       pw.callback(FileError::kSuccess, pw.size);
     }
   }
@@ -829,12 +828,6 @@ FileError FreeBSDFileOperations::AttemptSyncFallback() {
   auto fsyncResult = runWithTimeout(
       [this, &syncResult]() { syncResult = fsync(fd_); },
       TimeoutConfig(kSyncFsyncTimeoutSeconds)
-          .withOnTimeout([this]() {
-            Log("Timeout: fsync - closing fd");
-            int fd_copy = fd_;
-            fd_ = -1;
-            close(fd_copy);
-          })
   );
 
   if (fsyncResult == TimeoutResult::TimedOut) {

@@ -100,6 +100,7 @@ class FreeBSDFileOperations : public FileOperations {
   std::atomic<bool> cancelled_;
   FileError first_async_error_;
   std::uint64_t async_write_offset_;
+  int is_destr_;
 
   // Track callbacks by user_data pointer
   struct PendingWrite {
@@ -118,8 +119,6 @@ class FreeBSDFileOperations : public FileOperations {
   FileError OpenInternal(const char* path, int flags, mode_t mode = 0);
   static bool IsBlockDevicePath(const std::string& path);
 
-  bool InitKQ();
-  void CleanupKQ();
   void ProcessCompletions(bool wait);
   FileError AttemptSyncFallback() override;
   bool DrainAndSwitchToSync(int timeoutSeconds) override;
