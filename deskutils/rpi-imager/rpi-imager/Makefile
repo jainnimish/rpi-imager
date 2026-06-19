@@ -1,46 +1,44 @@
 PORTNAME=       rpi-imager
 DISTVERSION=    2.0.8
 DISTVERSIONPREFIX= v
-PORTREVISION=   1
 CATEGORIES=     deskutils
 
 USE_GITHUB= yes
-GH_ACCOUNT= raspberrypi
+GH_ACCOUNT= jainnimish
 
 WRKSRC_SUBDIR= src
 
-MAINTAINER= rpi@FreeBSD.org
+MAINTAINER= njain15@protonmail.com
 COMMENT=    Raspberry Pi Imaging Utility
-WWW=        https://github.com/raspberrypi/rpi-imager
+WWW=        https://github.com/jainnimish/rpi-imager
 
 LICENSE=       APACHE20
-LICENSE_FILE=  ${WRKSRC}/license.txt
+LICENSE_FILE=  ${WRKDIR}/${PORTNAME}-${PORTVERSION}/license.txt
 
-FLAVORS= default gui
+FLAVORS= default cli
 FLAVOR?= ${FLAVORS:[1]}
-default_PKGNAMESUFFIX=-cli
+cli_PKGNAMESUFFIX=-cli
 
-BUILD_DEPENDS= git:devel/git
 LIB_DEPENDS=   libgnutls.so:security/gnutls \
 			         libidn2.so:dns/libidn2 \
 			         libnettle.so:security/nettle
 
 USES=   qt:6 cmake pkgconfig desktop-file-utils
-USE_QT=	core network imageformats_run buildtools_build
+USE_QT=	base imageformats:run
 
-.if ${FLAVOR} == gui
-USE_QT+= gui widgets svg quickcontrols2 declarative dbus
-.else
+.if ${FLAVOR} == cli
 CMAKE_ON= BUILD_CLI_ONLY
+.else
+USE_QT+= svg declarative
 .endif
 
 OPTIONS_DEFINE= LINGUIST
 LINGUIST_DESC=  Enable Qt translation tool
 
-.if ${PORT_OPTIONS:LINGUIST}
-USE_QT+= linguisttools_build
-.endif
+.include <bsd.port.options.mk>
 
-CMAKE_BUILD_TYPE= MinSizeRel
+.if ${PORT_OPTIONS:MLINGUIST}
+USE_QT+= tools:build
+.endif
 
 .include <bsd.port.mk>
