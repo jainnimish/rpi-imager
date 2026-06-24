@@ -550,8 +550,8 @@ else()
     include(linux/PlatformPackaging.cmake)
 endif()
 
-add_dependencies(${PROJECT_NAME} zlibstatic yescrypt)
 if(NOT BSD STREQUAL "FreeBSD")
+    add_dependencies(${PROJECT_NAME} zlibstatic yescrypt)
     add_dependencies(${PROJECT_NAME} usb-1.0-static)
 else()
     target_link_libraries(${PROJECT_NAME} PRIVATE geom)
@@ -561,6 +561,7 @@ endif()
 include_directories(${CURL_INCLUDE_DIR} ${LibArchive_INCLUDE_DIR} ${LIBLZMA_INCLUDE_DIRS} ${LIBDRM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS} ${YESCRYPT_INCLUDE_DIR} ${LIBUSB_INCLUDE_DIR})
 if(NOT BSD STREQUAL "FreeBSD")
     include_directories(${ZSTD_INCLUDE_DIR})
+endif()
 
 # Link different Qt components based on build type
 # rpiboot link libraries (libusb)
@@ -580,7 +581,8 @@ else()
 endif()
 
 if(NOT BSD STREQUAL "FreeBSD")
-    target_link_libraries(${ZSTD_LIBRARIES})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${ZSTD_LIBRARIES})
+endif()
 
 # Testing
 # Restore our testing option after dependencies are configured

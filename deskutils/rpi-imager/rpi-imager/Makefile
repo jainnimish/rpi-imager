@@ -24,6 +24,8 @@ LIB_DEPENDS=    libgnutls.so:security/gnutls \
                 libidn2.so:dns/libidn2 \
                 libnettle.so:security/nettle
 
+RUN_DEPENDS=    curl:ftp/curl
+
 USES=      qt:6 cmake pkgconfig desktop-file-utils libarchive:run
 USE_QT=    base imageformats:run
 
