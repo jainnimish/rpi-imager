@@ -1,7 +1,0 @@
-%%CLI%%bin/rpi-imager-cli
-%%GUI%%bin/rpi-imager
-share/applications/com.raspberrypi.rpi-imager-cli.desktop
-share/icons/hicolor/scalable/apps/rpi-imager.svg
-%%GUI%%share/metainfo/com.raspberrypi.rpi-imager.metainfo.xml
-%%GUI%%share/mime/packages/com.raspberrypi.rpi-imager-manifest.xml
-%%GUI%%share/polkit-1/actions/com.raspberrypi.rpi-imager.policy
