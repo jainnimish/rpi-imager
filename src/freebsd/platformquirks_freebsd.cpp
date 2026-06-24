@@ -35,6 +35,7 @@
 #include <QDebug>
 #include <QProcess>
 #include <QFile>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
@@ -43,6 +44,16 @@
 #include <QUuid>
 #include <vector>
 #include <string>
+
+#ifdef QT_DBUS_LIB
+// xdg-desktop-portal OpenURI is only used by builds that link Qt DBus (the GUI
+// app). QT_DBUS_LIB is defined automatically by Qt when the DBus module is
+// linked, so the CLI build and the DBus-free PAL unit test exclude this cleanly.
+#include <QVariant>
+#include <QMap>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#endif
 
 namespace {
     // Network monitoring state
@@ -262,7 +273,7 @@ bool isBeepAvailable() {
         return true;
     }
 
-    qDebug() << "No beep mechanism available on this Linux system";
+    qDebug() << "No beep mechanism available on this FreeBSD system";
     return false;
 }
 
@@ -304,7 +315,7 @@ void beep() {
     // 5. System bell via echo (rarely works in GUI environments, but worth trying)
     QProcess::execute("echo", {"-e", "\\a"});
 
-    qDebug() << "Beep requested but no suitable audio mechanism found on this Linux system";
+    qDebug() << "Beep requested but no suitable audio mechanism found on this FreeBSD system";
 }
 
 bool hasNetworkConnectivity() {
@@ -441,7 +452,7 @@ void stopNetworkMonitoring() {
 }
 
 void bringWindowToForeground(void* windowHandle) {
-    // No-op on FreeBSD - like on Linux, window management is handled by the
+    // No-op on FreeBSD - like on FreeBSD, window management is handled by the
     // window manager and applications cannot force themselves to the foreground
     Q_UNUSED(windowHandle);
 }
@@ -838,6 +849,136 @@ bool launchDetached(const QString& program, const QStringList& arguments) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
+#ifdef QT_DBUS_LIB
+// Open an http(s) URL via the xdg-desktop-portal OpenURI interface. Routes
+// through the desktop environment's own URL handler, which is more robust than
+// xdg-open's MIME lookups and is the only path that works from inside a
+// Flatpak/Snap-confined browser environment. Returns true if the portal
+// accepted the request.
+static bool openUriViaPortal(const QString& uri) {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) {
+        return false;
+    }
+
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.portal.OpenURI"),
+        QStringLiteral("OpenURI"));
+    // OpenURI(parent_window: s, uri: s, options: a{sv}) -> handle: o
+    msg << QString() << uri << QVariantMap();
+
+    // Bounded timeout: if the portal is present but unresponsive, fall back to
+    // xdg-open rather than blocking the GUI thread for the default 25s.
+    QDBusMessage reply = bus.call(msg, QDBus::Block, 2000);
+    if (reply.type() == QDBusMessage::ErrorMessage) {
+        qWarning() << "OpenURI portal unavailable:" << reply.errorMessage();
+        return false;
+    }
+    qDebug() << "Opened URL via xdg-desktop-portal:" << uri;
+    return true;
+}
+#endif // QT_DBUS_LIB
+
+// Run xdg-open as the original (non-root) user when the GUI is itself elevated,
+// so it can reach that user's desktop session. Returns true if a launcher
+// process started.
+static bool openUrlAsOriginalUser(const QString& url) {
+    uid_t targetUid = 0;
+    QString targetUsername;
+
+    // Recover the invoking user from the elevation wrapper's environment.
+    const char* pkexecUid = ::getenv("PKEXEC_UID");
+    const char* sudoUid = ::getenv("SUDO_UID");
+    if (pkexecUid) {
+        targetUid = static_cast<uid_t>(::atoi(pkexecUid));
+    } else if (sudoUid) {
+        targetUid = static_cast<uid_t>(::atoi(sudoUid));
+    } else if (::getuid() != ::geteuid()) {
+        targetUid = ::getuid();
+    }
+
+    if (targetUid != 0) {
+        struct passwd* pw = ::getpwuid(targetUid);
+        if (pw && pw->pw_name) {
+            targetUsername = QString::fromUtf8(pw->pw_name);
+        }
+    }
+
+    if (targetUsername.isEmpty()) {
+        qWarning() << "Could not determine original user for xdg-open";
+        return false;
+    }
+
+    // Carry the env vars xdg-open needs to reach the user's desktop session.
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString dbusSessionAddress = env.value(QStringLiteral("DBUS_SESSION_BUS_ADDRESS"));
+    const QString xdgRuntimeDir = env.value(QStringLiteral("XDG_RUNTIME_DIR"));
+    const QString display = env.value(QStringLiteral("DISPLAY"));
+    const QString waylandDisplay = env.value(QStringLiteral("WAYLAND_DISPLAY"));
+    const QString xauthority = env.value(QStringLiteral("XAUTHORITY"));
+
+    // runuser -u <user> -- env VAR=value ... xdg-open <url>
+    // runuser preserves more than `pkexec --user` and needs no auth when root.
+    QStringList envArgs;
+    envArgs << QStringLiteral("env");
+    if (!dbusSessionAddress.isEmpty())
+        envArgs << QStringLiteral("DBUS_SESSION_BUS_ADDRESS=%1").arg(dbusSessionAddress);
+    if (!xdgRuntimeDir.isEmpty())
+        envArgs << QStringLiteral("XDG_RUNTIME_DIR=%1").arg(xdgRuntimeDir);
+    if (!display.isEmpty())
+        envArgs << QStringLiteral("DISPLAY=%1").arg(display);
+    if (!waylandDisplay.isEmpty())
+        envArgs << QStringLiteral("WAYLAND_DISPLAY=%1").arg(waylandDisplay);
+    if (!xauthority.isEmpty())
+        envArgs << QStringLiteral("XAUTHORITY=%1").arg(xauthority);
+    envArgs << QStringLiteral("xdg-open") << url;
+
+    QStringList runuserArgs;
+    runuserArgs << QStringLiteral("-u") << targetUsername << QStringLiteral("--") << envArgs;
+
+    if (launchDetached(QStringLiteral("runuser"), runuserArgs)) {
+        qDebug() << "Started runuser xdg-open";
+        return true;
+    }
+
+    qWarning() << "Failed to start runuser xdg-open, falling back to pkexec";
+    QStringList pkexecArgs;
+    pkexecArgs << QStringLiteral("--user") << targetUsername
+               << QStringLiteral("xdg-open") << url;
+    if (launchDetached(QStringLiteral("pkexec"), pkexecArgs)) {
+        qDebug() << "Started pkexec xdg-open";
+        return true;
+    }
+
+    qWarning() << "Failed to start pkexec xdg-open process";
+    return false;
+}
+
+bool openUrlExternally(const QUrl& url) {
+    const QString urlStr = url.toString();
+
+    // When elevated, xdg-open must run as the original user to reach their
+    // desktop session; the portal isn't reachable on root's session bus.
+    if (::geteuid() == 0) {
+        return openUrlAsOriginalUser(urlStr);
+    }
+
+    // Prefer the desktop portal, then fall back to xdg-open.
+#ifdef QT_DBUS_LIB
+    if (openUriViaPortal(urlStr)) {
+        return true;
+    }
+#endif
+    if (launchDetached(QStringLiteral("xdg-open"), QStringList() << urlStr)) {
+        qDebug() << "Started xdg-open";
+        return true;
+    }
+    qWarning() << "Failed to start xdg-open process";
+    return false;
+}
+
 bool tryElevate(int argc, char** argv) {
     const char* bundlePath = getBundlePath();
     if (!bundlePath || hasElevatedPrivileges()) {
@@ -953,7 +1094,7 @@ void execElevated(const QStringList& extraArgs) {
 }
 
 bool isScrollInverted(bool qtInvertedFlag) {
-    // On Linux (and therefore on FreeBSD), Qt's inverted flag behavior varies
+    // On FreeBSD (and therefore on FreeBSD), Qt's inverted flag behavior varies
     // by desktop environment.  Most modern DEs (GNOME, KDE) correctly report
     // it, so we pass through.
     return qtInvertedFlag;
@@ -1101,16 +1242,82 @@ const char* findCACertBundle()
 }
 
 void clearAppImageEnvironment() {
-    // AppImages set LD_LIBRARY_PATH and LD_PRELOAD to use bundled libraries.
-    // External tools need system libraries instead, otherwise they may fail
-    // due to symbol conflicts (e.g., PAM modules failing with "cannot open
-    // session: Module is unknown", or KDE tools failing with Qt version
-    // mismatches like "version `Qt_6.10' not found").
-    //
-    // This is safe because forked children running external tools don't need
-    // our bundled libraries.
-    unsetenv("LD_LIBRARY_PATH");
-    unsetenv("LD_PRELOAD");
+    // no-op
+}
+bool registerUriScheme() {
+    // $APPIMAGE (set by the AppImage runtime) or the resolved /proc/self/exe.
+    // %u makes the OS pass the rpi-imager:// callback URL as an argument.
+    const char* bundle = getBundlePath();
+    if (!bundle || bundle[0] == '\0') {
+        qWarning() << "registerUriScheme: could not resolve executable path";
+        return false;
+    }
+    const QString execPath = QString::fromUtf8(bundle);
+
+    // NoDisplay keeps this out of the application menu — it exists purely as a
+    // scheme handler, not a second launcher entry alongside the packaged one.
+    const QString desktopContents = QStringLiteral(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Raspberry Pi Imager\n"
+        "Exec=%1 %u\n"
+        "Icon=rpi-imager\n"
+        "Terminal=false\n"
+        "NoDisplay=true\n"
+        "MimeType=x-scheme-handler/rpi-imager;\n").arg(execPath);
+    const QByteArray desktopBytes = desktopContents.toUtf8();
+
+    const QString appsDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                            + QStringLiteral("/applications");
+    const QString desktopName = QStringLiteral("com.raspberrypi.rpi-imager-uri-handler.desktop");
+    const QString desktopPath = appsDir + QLatin1Char('/') + desktopName;
+
+    // Idempotent: if the entry already matches, assume registration is current
+    // and skip the desktop-database tools so steady-state startup stays cheap.
+    {
+        QFile existing(desktopPath);
+        if (existing.open(QIODevice::ReadOnly) && existing.readAll() == desktopBytes) {
+            return true;
+        }
+    }
+
+    if (!QDir().mkpath(appsDir)) {
+        qWarning() << "registerUriScheme: cannot create" << appsDir;
+        return false;
+    }
+
+    // Atomic write so a crash mid-write can't leave a truncated handler entry.
+    QSaveFile file(desktopPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "registerUriScheme: cannot write" << desktopPath
+                   << file.errorString();
+        return false;
+    }
+    file.write(desktopBytes);
+    if (!file.commit()) {
+        qWarning() << "registerUriScheme: commit failed for" << desktopPath;
+        return false;
+    }
+
+    // Refresh the desktop database and set ourselves as the default handler.
+    // Best-effort with bounded waits: a missing tool just means we rely on the
+    // MimeType association. Clear the AppImage library overrides for the child
+    // so these system tools load their own libraries (see clearAppImageEnvironment).
+    auto runTool = [](const QString& prog, const QStringList& args) {
+        QProcess p;
+        p.start(prog, args);
+        if (!p.waitForStarted(2000)) {
+            return;  // tool not present on this system
+        }
+        p.waitForFinished(3000);
+    };
+    runTool(QStringLiteral("update-desktop-database"), QStringList() << appsDir);
+    runTool(QStringLiteral("xdg-mime"),
+            QStringList() << QStringLiteral("default") << desktopName
+                          << QStringLiteral("x-scheme-handler/rpi-imager"));
+
+    qDebug() << "Registered rpi-imager:// scheme handler at" << desktopPath;
+    return true;
 }
 
 qreal detectTextScaleFactor()

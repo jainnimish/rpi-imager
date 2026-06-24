@@ -220,7 +220,6 @@ HERE="$(dirname "$(readlink -f "${0}")")"
 
 # Set up paths
 export PATH="${HERE}/usr/bin:${PATH}"
-export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
 
 # Execute the CLI-only binary directly (no --cli flag needed, it's built-in)
 exec "${HERE}/usr/local/bin/rpi-imager-cli" "$@"

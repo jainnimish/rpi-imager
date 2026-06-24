@@ -1,5 +1,5 @@
 PORTNAME=       rpi-imager
-DISTVERSION=    2.0.8
+DISTVERSION=    2.0.10
 DISTVERSIONPREFIX= v
 CATEGORIES=     deskutils
 
@@ -12,19 +12,20 @@ MAINTAINER= njain15@protonmail.com
 COMMENT=    Raspberry Pi Imaging Utility
 WWW=        https://github.com/jainnimish/rpi-imager
 
-LICENSE=       APACHE20
-LICENSE_FILE=  ${WRKDIR}/${PORTNAME}-${PORTVERSION}/license.txt
+LICENSE=    APACHE20
+LICENSE_FILE= ${WRKDIR}/${PORTNAME}-${PORTVERSION}/license.txt
 
 FLAVORS= default cli
 FLAVOR?= ${FLAVORS:[1]}
 cli_PKGNAMESUFFIX=-cli
 
-LIB_DEPENDS=   libgnutls.so:security/gnutls \
-			         libidn2.so:dns/libidn2 \
-			         libnettle.so:security/nettle
+LIB_DEPENDS=    libgnutls.so:security/gnutls \
+                libcrypt.so:security/libxcrypt \
+                libidn2.so:dns/libidn2 \
+                libnettle.so:security/nettle
 
-USES=   qt:6 cmake pkgconfig desktop-file-utils
-USE_QT=	base imageformats:run
+USES=      qt:6 cmake pkgconfig desktop-file-utils libarchive:run
+USE_QT=    base imageformats:run
 
 .if ${FLAVOR} == cli
 CMAKE_ON= BUILD_CLI_ONLY
