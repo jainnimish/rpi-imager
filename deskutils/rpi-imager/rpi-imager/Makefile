@@ -30,9 +30,11 @@ USES=      qt:6 cmake pkgconfig desktop-file-utils libarchive:run
 USE_QT=    base imageformats:run
 
 .if ${FLAVOR} == cli
-CMAKE_ON= BUILD_CLI_ONLY
+CMAKE_ON=   BUILD_CLI_ONLY
+PLIST_SUB=  GUI="@comment " CLI=""
 .else
-USE_QT+= svg declarative
+USE_QT+=    svg declarative
+PLIST_SUB=  CLI="@comment " GUI=""
 .endif
 
 OPTIONS_DEFINE= LINGUIST
