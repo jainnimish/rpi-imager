@@ -155,29 +155,31 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(BUILD_STATIC_LIBS ON)
 set(BUILD_SHARED_LIBS OFF)
 
-include(FetchContent)
+# Handle FreeBSD's dependencies in the Platform-specific CMake.
+if(NOT BSD STREQUAL "FreeBSD")
+    include(FetchContent)
 
-# Bundled liblzma
-include(dependencies/xz.cmake)
+    # Bundled liblzma
+    include(dependencies/xz.cmake)
 
-# Bundled zstd
-include(dependencies/zstd.cmake)
+    # Bundled zstd
+    include(dependencies/zstd.cmake)
 
-# Remote nghttp2
-include(dependencies/nghttp2.cmake)
+    # Remote nghttp2
+    include(dependencies/nghttp2.cmake)
+
+    # Bundled zlib
+    include(dependencies/zlib.cmake)
+
+    # Bundled libarchive
+    include(dependencies/libarchive.cmake)
+endif()
 
 # Bundled yescrypt
 include(dependencies/yescrypt.cmake)
 
-
-# Bundled zlib
-include(dependencies/zlib.cmake)
-
-# Bundled libarchive
-include(dependencies/libarchive.cmake)
-
 # libcurl
-if(APPLE)
+if(APPLE OR BSD STREQUAL "FreeBSD")
     # In version 8.15.0, libcurl dropped support for Secure Transport, because it
     # does not implement TLS 1.3. Unfortunately, there was no replacement Network.framework implementation,
     # so on macOS we're forced to use the macOS SDK version of libcurl, including libcurl's own OpenSSL-analogue.
@@ -193,12 +195,22 @@ endif()
 
 
 # Bundled libusb (for rpiboot Compute Module support)
-include(dependencies/libusb.cmake)
+if(BSD STREQUAL "FreeBSD")
+    # FreeBSD has an implementation of libusb in its base system and moreover
+    # the libusb project does not officially support FreeBSD
+
+    set(LIBUSB_INCLUDE_DIR "/usr/include/libusb.h")
+    set(LIBUSB_LIBRARIES "/usr/lib/libusb.a")
+else()
+    include(dependencies/libusb.cmake)
+endif()
 
 # Add dependencies
 if (APPLE)
     include(mac/Platform.cmake)
-elseif (UNIX)
+elseif (BSD STREQUAL "FreeBSD")
+    include(freebsd/Platform.cmake)
+elseif (LINUX)
     include(linux/Platform.cmake)
 elseif (WIN32)
     include(windows/Platform.cmake)
@@ -531,12 +543,26 @@ if (WIN32)
     include(windows/PlatformPackaging.cmake)
 elseif(APPLE)
     include(mac/PlatformPackaging.cmake)
+elseif(BSD STREQUAL "FreeBSD")
+    include(freebsd/PlatformPackaging.cmake)
 else()
     include(linux/PlatformPackaging.cmake)
 endif()
 
-add_dependencies(${PROJECT_NAME} zlibstatic yescrypt usb-1.0-static)
-include_directories(${CURL_INCLUDE_DIR} ${LibArchive_INCLUDE_DIR} ${LIBLZMA_INCLUDE_DIRS} ${LIBDRM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIR} ${YESCRYPT_INCLUDE_DIR} ${LIBUSB_INCLUDE_DIR})
+add_dependencies(${PROJECT_NAME} yescrypt)
+
+if(NOT BSD STREQUAL "FreeBSD")
+    add_dependencies(${PROJECT_NAME} zlibstatic)
+    add_dependencies(${PROJECT_NAME} usb-1.0-static)
+else()
+    target_link_libraries(${PROJECT_NAME} PRIVATE geom)
+    target_link_libraries(${PROJECT_NAME} PRIVATE cam)
+endif()
+
+include_directories(${CURL_INCLUDE_DIR} ${LibArchive_INCLUDE_DIR} ${LIBLZMA_INCLUDE_DIRS} ${LIBDRM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS} ${YESCRYPT_INCLUDE_DIR} ${LIBUSB_INCLUDE_DIR})
+if(NOT BSD STREQUAL "FreeBSD")
+    include_directories(${ZSTD_INCLUDE_DIR})
+endif()
 
 # Link different Qt components based on build type
 # rpiboot link libraries (libusb)
@@ -544,15 +570,19 @@ set(RPIBOOT_LIBS ${LIBUSB_LIBRARIES})
 
 if(BUILD_CLI_ONLY)
     # CLI-only build: link Core, Network and essential libraries
-    target_link_libraries(${PROJECT_NAME} PRIVATE ${QT}::Core ${QT}::Network ${CURL_LIBRARIES} ${LibArchive_LIBRARIES} ${ZSTD_LIBRARIES} ${LIBLZMA_LIBRARIES} ${ZLIB_LIBRARIES} ${YESCRYPT_LIBRARIES} ${LIBDRM_LIBRARIES} ${ATOMIC_LIBRARY} ${RPIBOOT_LIBS} ${EXTRALIBS})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${QT}::Core ${QT}::Network ${CURL_LIBRARIES} ${LibArchive_LIBRARIES} ${LIBLZMA_LIBRARIES} ${ZLIB_LIBRARIES} ${YESCRYPT_LIBRARIES} ${LIBDRM_LIBRARIES} ${ATOMIC_LIBRARY} ${RPIBOOT_LIBS} ${EXTRALIBS})
 else()
     # Regular GUI build: link all GUI components
     # Add DBus on Linux for suspend inhibitor and native file dialogs (portals)
     if(UNIX AND NOT APPLE)
-        target_link_libraries(${PROJECT_NAME} PRIVATE ${QT}::Core ${QT}::Gui ${QT}::Quick ${QT}::Svg ${QT}::Network ${QT}::DBus ${CURL_LIBRARIES} ${LibArchive_LIBRARIES} ${ZSTD_LIBRARIES} ${LIBLZMA_LIBRARIES} ${ZLIB_LIBRARIES} ${YESCRYPT_LIBRARIES} ${LIBDRM_LIBRARIES} ${ATOMIC_LIBRARY} ${RPIBOOT_LIBS} ${EXTRALIBS})
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${QT}::Core ${QT}::Gui ${QT}::Quick ${QT}::Svg ${QT}::Network ${QT}::DBus ${CURL_LIBRARIES} ${LibArchive_LIBRARIES} ${LIBLZMA_LIBRARIES} ${ZLIB_LIBRARIES} ${YESCRYPT_LIBRARIES} ${LIBDRM_LIBRARIES} ${ATOMIC_LIBRARY} ${RPIBOOT_LIBS} ${EXTRALIBS})
     else()
-        target_link_libraries(${PROJECT_NAME} PRIVATE ${QT}::Core ${QT}::Gui ${QT}::Quick ${QT}::Svg ${QT}::Network ${CURL_LIBRARIES} ${LibArchive_LIBRARIES} ${ZSTD_LIBRARIES} ${LIBLZMA_LIBRARIES} ${ZLIB_LIBRARIES} ${YESCRYPT_LIBRARIES} ${LIBDRM_LIBRARIES} ${ATOMIC_LIBRARY} ${RPIBOOT_LIBS} ${EXTRALIBS})
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${QT}::Core ${QT}::Gui ${QT}::Quick ${QT}::Svg ${QT}::Network ${CURL_LIBRARIES} ${LibArchive_LIBRARIES} ${LIBLZMA_LIBRARIES} ${ZLIB_LIBRARIES} ${YESCRYPT_LIBRARIES} ${LIBDRM_LIBRARIES} ${ATOMIC_LIBRARY} ${RPIBOOT_LIBS} ${EXTRALIBS})
     endif()
+endif()
+
+if(NOT BSD STREQUAL "FreeBSD")
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${ZSTD_LIBRARIES})
 endif()
 
 # Testing
