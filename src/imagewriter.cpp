@@ -2954,6 +2954,7 @@ void ImageWriter::_parseZstdFile()
     // Two-stage: read just enough bytes to query the actual frame header size,
     // then read the remainder. ZSTD_FRAMEHEADERSIZE_PREFIX is the minimum input
     // size required to call ZSTD_frameHeaderSize().
+#ifndef Q_OS_FREEBSD
     constexpr qint64 prefixSize = ZSTD_FRAMEHEADERSIZE_PREFIX(ZSTD_f_zstd1);
     QByteArray header = f.read(prefixSize);
     if (header.size() < prefixSize)
@@ -2975,6 +2976,10 @@ void ImageWriter::_parseZstdFile()
     {
         header.append(f.read(static_cast<qint64>(hdrSize) - prefixSize));
     }
+#else
+    constexpr size_t hdrSize = 18;
+    QByteArray header = f.read(static_cast<qint64>(hdrSize));
+#endif
     f.close();
 
     if (static_cast<size_t>(header.size()) < hdrSize)
