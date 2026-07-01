@@ -10,10 +10,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
-#ifdef Q_OS_LINUX
-#include <linux/wireless.h>
-#endif
-#ifdef Q_OS_BSD4
+#ifdef Q_OS_FREEBSD
 #include <net/if.h>
 #include <net80211/ieee80211.h>
 #include <net80211/ieee80211_ioctl.h>
