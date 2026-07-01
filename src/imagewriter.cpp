@@ -14,7 +14,11 @@
 #include "customization_generator.h"
 #include "drivelist/drivelist.h"
 #include "dependencies/sha256crypt/sha256crypt.h"
+#ifdef Q_OS_FREEBSD
+#include <crypt.h>
+#else
 #include "dependencies/yescrypt/yescrypt_wrapper.h"
+#endif
 #include "driveformatthread.h"
 #include "localfileextractthread.h"
 #include "systemmemorymanager.h"
@@ -30,10 +34,16 @@
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
 #endif
+#define crypt_data __freebsd_system_crypt_data_ignored
+#define crypt_r __freebsd_system_crypt_r_ignored
 #include <archive.h>
 #include <archive_entry.h>
+#undef crypt_r
+#undef crypt_data
 #include <lzma.h>
+#ifndef Q_OS_FREEBSD // Long live stability!
 #define ZSTD_STATIC_LINKING_ONLY  // for ZSTD_FRAMEHEADERSIZE_MAX
+#endif
 #include <zstd.h>
 #include <qjsondocument.h>
 #include <QJsonArray>
@@ -3981,8 +3991,12 @@ QString ImageWriter::crypt(const QByteArray &password)
         QByteArray salt;
         for (int i=0; i<16; i++)  // yescrypt uses longer salts
             salt += saltchars[uid(gen)];
-        
+#ifdef Q_OS_FREEBSD
+        QByteArray s = "$y$j9T$" + salt; // TODO: Use gensalt
+        char *result = ::crypt(password.constData(), s.constData());
+#else
         char *result = yescrypt_crypt(password.constData(), salt.constData());
+#endif
         return result ? QString(result) : QString();
     } else {
         // Use sha256crypt for older OS releases
