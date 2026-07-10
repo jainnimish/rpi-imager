@@ -19,8 +19,10 @@ set(PLATFORM_SOURCES
     linux/stpanalyzer.h
     linux/stpanalyzer.cpp
     linux/acceleratedcryptographichash_gnutls.cpp
+    unix/bootimgcreator_unix.cpp
     linux/bootimgcreator_linux.cpp
     linux/secureboot_crypto_linux.cpp
+    unix/file_operations_unix.cpp
     linux/file_operations_linux.cpp
     linux/platformquirks_linux.cpp
 )

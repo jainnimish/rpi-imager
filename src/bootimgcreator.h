@@ -21,6 +21,10 @@
  * - linux/bootimgcreator_linux.cpp
  * - freebsd/bootimgcreator_freebsd.cpp
  * - windows/bootimgcreator_windows.cpp
+ *
+ * Note:
+ * FreeBSD and OSX share common code found in:
+ * - unix/bootimgcreator_unix.cpp
  */
 class BootImgCreator
 {
