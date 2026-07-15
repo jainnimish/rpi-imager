@@ -9,7 +9,9 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
-#include <linux/fs.h>
+#include <sys/disk.h>
+#include <sys/sysctl.h>
+#include <aio.h>
 #include <errno.h>
 #include <sstream>
 #include <cstring>
@@ -27,10 +29,8 @@ using rpi_imager::TimeoutDefaults::kMinAsyncQueueDepth;
 using rpi_imager::TimeoutDefaults::kHighLatencyThresholdMs;
 using rpi_imager::TimeoutDefaults::kAsyncFirstCompletionTimeoutMs;
 
-// io_uring support (Linux 5.1+)
-#ifdef HAVE_LIBURING
-#include <liburing.h>
-#endif
+#include <camlib.h>
+#include <libgeom.h>
 
 #include <fstream>
 
@@ -47,116 +47,97 @@ static void Log(const std::string& msg) {
 LinuxFileOperations::LinuxFileOperations() 
     : fd_(-1), last_error_code_(0), using_direct_io_(false), direct_io_attempted_(false),
       async_queue_depth_(1), pending_writes_(0), cancelled_(false), first_async_error_(FileError::kSuccess),
-      async_write_offset_(0), io_uring_available_(false), ring_(nullptr), next_write_id_(1) {  // Start at 1, 0 is reserved for cancel operations
-    
-#ifdef HAVE_LIBURING
-    // Probe for io_uring availability
-    io_uring_available_ = InitIOUring();
-    if (io_uring_available_) {
-        Log("io_uring available and initialized");
-    } else {
-        Log("io_uring initialization failed, async I/O will fall back to sync");
-    }
-#else
-    Log("io_uring support not compiled in, async I/O disabled");
-#endif
+      async_write_offset_(0), next_write_id_(0), is_destr_(0) {
 }
 
 bool LinuxFileOperations::IsBlockDevicePath(const std::string& path) {
-  // Check for common block device paths
-  return (path.find("/dev/") == 0);
+    struct gmesh devtree;
+    struct gclass *geom_class;
+    struct ggeom *disk;
+
+    int error = geom_gettree(&devtree);
+    if (error != 0) {
+	Log("Failed to open GEOM device tree");
+        return false;
+    }
+
+    LIST_FOREACH(geom_class, &devtree.lg_class, lg_class) {
+        if (std::string(geom_class->lg_name) == "DISK") {
+            LIST_FOREACH(disk, &geom_class->lg_geom, lg_geom) {
+                if (std::string(g_device_path(disk->lg_name)) == std::string(g_device_path(path.c_str()))) {
+                    return true;
+                }
+            }
+
+	    break;
+        }
+    }
+
+    return false;
 }
 
 LinuxFileOperations::~LinuxFileOperations() {
-  WaitForPendingWrites();
-  CleanupIOUring();
+  is_destr_ = 1;
   Close();
 }
 
-#ifdef HAVE_LIBURING
-bool LinuxFileOperations::InitIOUring() {
-    if (ring_ != nullptr) {
-        return true;  // Already initialized
-    }
-    
-    ring_ = new io_uring;
-    memset(ring_, 0, sizeof(io_uring));
-    
-    // Initialize with default queue depth
-    int queue_size = 64;
-    
-    struct io_uring_params params;
-    memset(&params, 0, sizeof(params));
-    
-    int ret = io_uring_queue_init_params(queue_size, ring_, &params);
-    if (ret < 0) {
-        std::ostringstream oss;
-        oss << "io_uring_queue_init failed: " << strerror(-ret) << " (error " << -ret << ")";
-        Log(oss.str());
-        delete ring_;
-        ring_ = nullptr;
-        return false;
-    }
-    
-    std::ostringstream oss;
-    oss << "io_uring initialized with queue size " << queue_size;
-    Log(oss.str());
-    
-    return true;
-}
-
-void LinuxFileOperations::CleanupIOUring() {
-    if (ring_ != nullptr) {
-        io_uring_queue_exit(ring_);
-        delete ring_;
-        ring_ = nullptr;
-    }
-    pending_callbacks_.clear();
-}
-
 void LinuxFileOperations::ProcessCompletions(bool wait) {
-    if (ring_ == nullptr || pending_writes_.load() == 0) {
+    if (pending_writes_.load() == 0) {
         return;
     }
 
-    struct io_uring_cqe* cqe;
-    int ret;
-    bool processed_at_least_one = false;
+    ssize_t result;
+    struct aiocb *iocb{};
+    struct timespec timeout{};
 
     if (wait && !cancelled_.load()) {
         // Use timeout-based wait so we can check for cancellation
         // Also add overall timeout to prevent infinite waiting if device stops responding
-        struct __kernel_timespec ts = {.tv_sec = 0, .tv_nsec = 100000000};  // 100ms
+        timeout.tv_nsec = 100000000; // 100ms
         auto waitStart = std::chrono::steady_clock::now();
-        
-        ret = io_uring_wait_cqe_timeout(ring_, &cqe, &ts);
-        // If timeout (-ETIME) and not cancelled, try again with overall limit
-        while (ret == -ETIME && !cancelled_.load() && pending_writes_.load() > 0) {
+
+recheck:
+        // We don't wait unless at least one write has been queued,
+        // so EAGAIN shouldn't be possible.
+        if ((result = aio_waitcomplete(&iocb, &timeout)) == -1 &&
+            errno != EINPROGRESS && iocb == nullptr) {
+            std::ostringstream oss;
+            oss << "aio_waitcomplete: Couldn't fetch an event: " << strerror(errno)
+                << " - trying again.";
+            Log(oss.str());
+        }
+
+        // If timeout, try again with overall limit
+        if (iocb == nullptr && !cancelled_.load() && pending_writes_.load() > 0) {
             auto elapsed = std::chrono::steady_clock::now() - waitStart;
             if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() >= kAsyncFirstCompletionTimeoutMs) {
-                Log("ProcessCompletions: No completion received in " + std::to_string(kAsyncFirstCompletionTimeoutMs) + 
+                Log("ProcessCompletions: No completion received in " + std::to_string(kAsyncFirstCompletionTimeoutMs) +
                     "ms, returning to allow recovery");
                 return;  // Return to caller so queue-wait timeout can trigger
             }
-            ret = io_uring_wait_cqe_timeout(ring_, &cqe, &ts);
+            goto recheck;
         }
+        timeout.tv_nsec = 0;
     } else {
-        ret = io_uring_peek_cqe(ring_, &cqe);
+        result = aio_waitcomplete(&iocb, &timeout);
     }
-    
-    while (ret == 0) {
-        std::uint64_t write_id = cqe->user_data;
-        int result = cqe->res;
-        
-        // Skip cancel operation completions (user_data == 0)
-        // Note: Real writes use write_id starting from 1 (next_write_id_ initialized to 1)
-        // Cancel operations use user_data=0 as a sentinel value
-        if (write_id == 0) {
-            io_uring_cqe_seen(ring_, cqe);
-            ret = io_uring_peek_cqe(ring_, &cqe);
-            continue;
+
+    while(true) {
+        // This must be an error with aio_waitcomplete since
+        // an error with aio_write should return a valid aiocb.
+        if (iocb == nullptr) {
+            if (errno == EINPROGRESS || errno == EAGAIN)
+                break;
+            std::ostringstream oss;
+            oss << "aio_waitcomplete: Couldn't fetch an event: " << strerror(errno);
+            Log(oss.str());
+            return;
         }
-        
+
+        auto write_id = (std::uint64_t)iocb->aio_sigevent.sigev_value.sival_ptr;
+        std::free(iocb);
+        iocb = nullptr;
+
         AsyncWriteCallback callback = nullptr;
         std::size_t expected_size = 0;
         bool found_in_map = false;
@@ -174,12 +155,10 @@ void LinuxFileOperations::ProcessCompletions(bool wait) {
         }
 
         // Orphaned completion: entry was already consumed (e.g. by sync fallback
-        // clearing the map, or a duplicate CQE). Just consume and move on.
+        // clearing the map). Just consume and move on.
         if (!found_in_map) {
-            Log("io_uring: completion for unknown write_id " + std::to_string(write_id) +
+            Log("aio: completion for unknown write_id " + std::to_string(write_id) +
                 " (result=" + std::to_string(result) + ") - ignoring orphaned completion");
-            io_uring_cqe_seen(ring_, cqe);
-            ret = io_uring_peek_cqe(ring_, &cqe);
             continue;
         }
 
@@ -205,27 +184,23 @@ void LinuxFileOperations::ProcessCompletions(bool wait) {
           ReduceQueueDepthForRecovery(newDepth);
         }
 
-        FileError error = FileError::kSuccess;
-        if (result < 0) {
-            if (result == -ECANCELED) {
-                error = FileError::kCancelled;
-            } else {
-                error = FileError::kWriteError;
-                if (first_async_error_ == FileError::kSuccess) {
-                    first_async_error_ = error;
-                }
-                std::ostringstream oss;
-                oss << "io_uring write failed: " << strerror(-result);
-                Log(oss.str());
-            }
-        } else if (static_cast<std::size_t>(result) != expected_size) {
-            error = FileError::kWriteError;
+        FileError error = FileError::kWriteError;
+        if (result == -1) {
             if (first_async_error_ == FileError::kSuccess) {
                 first_async_error_ = error;
             }
             std::ostringstream oss;
-            oss << "io_uring short write: expected " << expected_size << ", got " << result;
+            oss << "aio_write failed with error: " << strerror(errno);
             Log(oss.str());
+        } else if (static_cast<std::size_t>(result) != expected_size) {
+            if (first_async_error_ == FileError::kSuccess) {
+                first_async_error_ = error;
+            }
+            std::ostringstream oss;
+            oss << "aio_write short write: expected " << expected_size << ", got " << result;
+            Log(oss.str());
+        } else {
+            error = FileError::kSuccess;
         }
 
         if (callback) {
@@ -233,22 +208,9 @@ void LinuxFileOperations::ProcessCompletions(bool wait) {
         }
 
         pending_writes_.fetch_sub(1);
-        io_uring_cqe_seen(ring_, cqe);
-        processed_at_least_one = true;
-        
-        // After processing at least one, only peek for more (non-blocking)
-        ret = io_uring_peek_cqe(ring_, &cqe);
+        result = aio_waitcomplete(&iocb, &timeout);
     }
-    
-    // If waiting and we processed at least one, return to let caller queue more
-    // (This matches the Windows behavior we just fixed)
 }
-#else
-// Stubs when liburing is not available
-bool LinuxFileOperations::InitIOUring() { return false; }
-void LinuxFileOperations::CleanupIOUring() { pending_callbacks_.clear(); }
-void LinuxFileOperations::ProcessCompletions(bool) {}
-#endif
 
 FileError LinuxFileOperations::OpenDevice(const std::string& path) {
   // Reset direct I/O tracking for new device
@@ -344,9 +306,9 @@ FileError LinuxFileOperations::GetSize(std::uint64_t& size) {
   }
 
   // For block devices, use BLKGETSIZE64 ioctl
-  if (S_ISBLK(st.st_mode)) {
+  if (S_ISBLK(st.st_mode) || S_ISCHR(st.st_mode)) {
     std::uint64_t device_size = 0;
-    if (ioctl(fd_, BLKGETSIZE64, &device_size) == -1) {
+    if (ioctl(fd_, DIOCGMEDIASIZE, &device_size) == -1) {
       last_error_code_ = errno;
       return FileError::kSizeError;
     }
@@ -578,20 +540,15 @@ int LinuxFileOperations::GetLastErrorCode() const {
 // ============= Async I/O Implementation (using io_uring) =============
 
 bool LinuxFileOperations::SetAsyncQueueDepth(int depth) {
-  if (depth < 1) depth = 1;
-  
-  async_queue_depth_ = depth;
-  
-  if (depth > 1 && !io_uring_available_) {
-    Log("Warning: Async I/O requested but io_uring not available");
-    return false;
-  }
-  
-  std::ostringstream oss;
-  oss << "Async queue depth set to " << depth << " (io_uring: " << (io_uring_available_ ? "yes" : "no") << ")";
-  Log(oss.str());
-  
-  return io_uring_available_;
+    int old, nlen = sizeof(depth);
+    size_t olen = sizeof(old);
+
+    // Since we're doing raw disk I/O, only set values for that pool
+    if (sysctlbyname("vfs.aio.max_buf_aio", &old, &olen,
+        &depth, nlen) == -1)
+        return false;
+    async_queue_depth_ = depth;
+    return true;
 }
 
 FileError LinuxFileOperations::AsyncWriteSequential(const std::uint8_t* data, std::size_t size, 
@@ -602,14 +559,13 @@ FileError LinuxFileOperations::AsyncWriteSequential(const std::uint8_t* data, st
   }
   
   // If async not enabled, io_uring not available, or in sync fallback mode, use sync
-  if (async_queue_depth_ <= 1 || !io_uring_available_ || ring_ == nullptr || sync_fallback_mode_) {
+  if (async_queue_depth_ <= 1 || sync_fallback_mode_) {
     FileError result = WriteSequential(data, size);
     // Note: WriteSequential already updates async_write_offset_
     if (callback) callback(result, result == FileError::kSuccess ? size : 0);
     return result;
   }
   
-#ifdef HAVE_LIBURING
   // Check for previous errors
   if (first_async_error_ != FileError::kSuccess) {
     if (callback) callback(first_async_error_, 0);
@@ -632,20 +588,6 @@ FileError LinuxFileOperations::AsyncWriteSequential(const std::uint8_t* data, st
     ProcessCompletions(true);
   }
   
-  // Get a submission queue entry
-  struct io_uring_sqe* sqe = io_uring_get_sqe(ring_);
-  if (sqe == nullptr) {
-    // SQ full, flush and retry
-    io_uring_submit(ring_);
-    ProcessCompletions(true);
-    sqe = io_uring_get_sqe(ring_);
-    if (sqe == nullptr) {
-      Log("io_uring: failed to get SQE even after flush");
-      if (callback) callback(FileError::kWriteError, 0);
-      return FileError::kWriteError;
-    }
-  }
-  
   // Prepare the write
   std::uint64_t write_offset = async_write_offset_;
   async_write_offset_ += size;
@@ -663,33 +605,34 @@ FileError LinuxFileOperations::AsyncWriteSequential(const std::uint8_t* data, st
   }
   
   pending_writes_.fetch_add(1);
+
+  // Set up aiocb for write
+  auto *iocb = static_cast<struct aiocb *>(std::calloc(1, sizeof(struct aiocb)));
+  iocb->aio_fildes = fd_;
+  iocb->aio_buf = const_cast<std::uint8_t*>(data);
+  iocb->aio_nbytes = static_cast<size_t>(size);
+  iocb->aio_offset = static_cast<off_t>(write_offset);
+
+  // Set up sigevent with write_id
+  struct sigevent sigev{};
+  sigev.sigev_notify = SIGEV_NONE;
+  sigev.sigev_value.sival_ptr = (void *)write_id;
+  iocb->aio_sigevent = sigev;
   
-  // Set up the SQE for a write
-  io_uring_prep_write(sqe, fd_, data, static_cast<unsigned>(size), static_cast<off_t>(write_offset));
-  io_uring_sqe_set_data64(sqe, write_id);
-  
-  // Submit the request
-  int ret = io_uring_submit(ring_);
-  if (ret < 0) {
+  if (aio_write(iocb) < 0) {
     pending_writes_.fetch_sub(1);
     {
       std::lock_guard<std::mutex> lock(pending_mutex_);
       pending_callbacks_.erase(write_id);
     }
     std::ostringstream oss;
-    oss << "io_uring_submit failed: " << strerror(-ret);
+    oss << "aio_write failed: " << strerror(errno);
     Log(oss.str());
     if (callback) callback(FileError::kWriteError, 0);
     return FileError::kWriteError;
   }
   
   return FileError::kSuccess;
-#else
-  // Should never reach here, but just in case
-  FileError result = WriteSequential(data, size);
-  if (callback) callback(result, result == FileError::kSuccess ? size : 0);
-  return result;
-#endif
 }
 
 void LinuxFileOperations::PollAsyncCompletions() {
@@ -709,42 +652,11 @@ void LinuxFileOperations::PollAsyncCompletions() {
 }
 
 void LinuxFileOperations::CancelAsyncIO() {
-#ifdef HAVE_LIBURING
   // Set cancellation flag first
   cancelled_.store(true);
-  
-  if (!io_uring_available_ || ring_ == nullptr) {
-    return;
-  }
-  
-  // Cancel all pending I/O operations
-  // We submit a cancel request for each pending write
-  {
-    std::lock_guard<std::mutex> lock(pending_mutex_);
-    for (const auto& [write_id, pending] : pending_callbacks_) {
-      struct io_uring_sqe* sqe = io_uring_get_sqe(ring_);
-      if (sqe != nullptr) {
-        io_uring_prep_cancel64(sqe, write_id, 0);
-        io_uring_sqe_set_data64(sqe, 0);  // No callback for cancel operations
-      }
-    }
-  }
-  io_uring_submit(ring_);
-
-  // Note: we do NOT call ProcessCompletions here. CancelAsyncIO may be
-  // called from any thread (e.g. main thread via cancelDownload), but the
-  // extract thread is the sole CQ consumer. The cancelled_ flag will cause
-  // the extract thread to exit its write loop, and WaitForPendingWrites
-  // will drain the -ECANCELED completions.
-#endif
 }
 
 FileError LinuxFileOperations::WaitForPendingWrites() {
-#ifdef HAVE_LIBURING
-  if (!io_uring_available_ || ring_ == nullptr) {
-    return FileError::kSuccess;
-  }
-  
   // Wait for pending writes to complete or be cancelled.
   // 
   // DESIGN: Stall detection is handled by WriteProgressWatchdog at the ImageWriter level.
@@ -782,9 +694,6 @@ FileError LinuxFileOperations::WaitForPendingWrites() {
   }
   
   return first_async_error_;
-#else
-  return FileError::kSuccess;
-#endif
 }
 
 // GetAsyncIOStats() inherited from FileOperations base class
@@ -809,7 +718,6 @@ std::vector<FileOperations::PendingWriteInfo> LinuxFileOperations::GetPendingWri
 }
 
 FileError LinuxFileOperations::AttemptSyncFallback() {
-#ifdef HAVE_LIBURING
   // Get pending writes before cancelling (they're still valid in ring buffer)
   auto pendingWrites = GetPendingWritesSorted();
   
@@ -832,11 +740,13 @@ FileError LinuxFileOperations::AttemptSyncFallback() {
   sync_fallback_mode_ = true;
   
   // Clear the pending callbacks (we'll handle them synchronously)
-  {
-    std::lock_guard<std::mutex> lock(pending_mutex_);
-    pending_callbacks_.clear();
+  if (is_destr_) {
+    {
+      std::lock_guard<std::mutex> lock(pending_mutex_);
+      pending_callbacks_.clear();
+    }
+    pending_writes_.store(0);
   }
-  pending_writes_.store(0);
   
   // Replay pending writes synchronously with timeout protection
   for (const auto& pw : pendingWrites) {
@@ -865,7 +775,7 @@ FileError LinuxFileOperations::AttemptSyncFallback() {
       return FileError::kWriteError;
     }
     
-    if (pw.callback) {
+    if (is_destr_ && pw.callback) {
       pw.callback(FileError::kSuccess, pw.size);
     }
   }
@@ -910,13 +820,9 @@ FileError LinuxFileOperations::AttemptSyncFallback() {
   
   Log("Sync fallback successful - continuing in sync mode");
   return FileError::kSuccess;
-#else
-  return FileError::kSuccess;
-#endif
 }
 
 bool LinuxFileOperations::DrainAndSwitchToSync(int stallTimeoutSeconds) {
-#ifdef HAVE_LIBURING
   // First, prevent new async writes by switching to sync mode
   sync_fallback_mode_ = true;
   
@@ -971,15 +877,9 @@ bool LinuxFileOperations::DrainAndSwitchToSync(int stallTimeoutSeconds) {
   Log("DrainAndSwitchToSync: Successfully drained all writes in " + 
       std::to_string(elapsedMs) + "ms - now in sync mode");
   return true;
-#else
-  (void)stallTimeoutSeconds;
-  sync_fallback_mode_ = true;
-  return true;
-#endif
 }
 
 void LinuxFileOperations::ReduceQueueDepthForRecovery(int newDepth) {
-#ifdef HAVE_LIBURING
   int oldDepth = async_queue_depth_;
   
   // Only reduce, never increase during recovery
@@ -987,49 +887,50 @@ void LinuxFileOperations::ReduceQueueDepthForRecovery(int newDepth) {
     return;
   }
   
-  // Ensure minimum viable depth (2 still allows some pipelining)
-  newDepth = std::max(newDepth, TimeoutDefaults::kMinAsyncQueueDepth);
-  
-  async_queue_depth_ = newDepth;
-  
-  Log("Queue depth reduced for recovery: " + std::to_string(oldDepth) + " -> " + std::to_string(newDepth) +
-      " (pending: " + std::to_string(pending_writes_.load()) + ")");
-#else
-  (void)newDepth;
-#endif
+  (void)SetAsyncQueueDepth(newDepth);
 }
 
 // Query device I/O limits from sysfs without requiring an open file descriptor.
 // Returns zero-initialized struct if the device path isn't a block device or sysfs is unavailable.
 FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) {
-  FileOperations::DeviceIOLimits limits;
+    FileOperations::DeviceIOLimits limits;
+    struct cam_device *dev;
+    union ccb *ccb;
+    int val;
+    size_t len = sizeof(val);
 
-  // Extract device name from path (e.g. "/dev/sda" -> "sda")
-  if (path.find("/dev/") != 0)
+    // camcontrol has soft queue depth
+    dev = cam_open_device(path.c_str(), O_RDWR);
+    if (dev == NULL)
+        return limits;
+
+    ccb = cam_getccb(dev);
+    if (ccb == NULL)
+        return limits;
+
+    CCB_CLEAR_ALL_EXCEPT_HDR(&ccb->cgds);
+
+	ccb->ccb_h.func_code = XPT_GDEV_STATS;
+	if (cam_send_ccb(dev, ccb) < 0)
+		goto bail;
+
+	if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)
+		goto bail;
+
+    limits.suggested_queue_depth = ccb->cgds.dev_openings +
+        ccb->cgds.dev_active;
+
+    // Get max single I/O
+    if(sysctlbyname("kern.maxphys", &val, &len, nullptr, 0) == -1) {
+        goto bail;
+    }
+
+    if (val > 0)
+        limits.max_transfer_bytes = static_cast<size_t>(val);
+
+bail:
+    cam_freeccb(ccb);
     return limits;
-  std::string devname = path.substr(5);
-  if (devname.empty())
-    return limits;
-
-  std::string queueDir = "/sys/block/" + devname + "/queue/";
-
-  // Read nr_requests — block layer scheduler queue depth
-  {
-    std::ifstream f(queueDir + "nr_requests");
-    int val = 0;
-    if (f >> val && val > 0)
-      limits.suggested_queue_depth = val;
-  }
-
-  // Read max_sectors_kb — maximum single I/O request size the block layer will accept
-  {
-    std::ifstream f(queueDir + "max_sectors_kb");
-    int val = 0;
-    if (f >> val && val > 0)
-      limits.max_transfer_bytes = static_cast<size_t>(val) * 1024;
-  }
-
-  return limits;
 }
 
 // Platform-specific factory function implementation

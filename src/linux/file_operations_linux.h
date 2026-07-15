@@ -13,14 +13,8 @@
 #include <vector>
 #include <unordered_map>
 
-// Forward declare io_uring struct to avoid header dependency in .h
-// When HAVE_LIBURING is not defined, this is just used as an opaque pointer (always nullptr)
-struct io_uring;
-
 namespace rpi_imager {
 
-// Linux implementation using POSIX file operations with io_uring async I/O
-// io_uring provides kernel-level async I/O with minimal syscall overhead (Linux 5.1+)
 class LinuxFileOperations : public FileOperations {
  public:
   LinuxFileOperations();
@@ -81,7 +75,7 @@ class LinuxFileOperations : public FileOperations {
   // ============= Async I/O API (Linux: using io_uring) =============
   bool SetAsyncQueueDepth(int depth) override;
   int GetAsyncQueueDepth() const override { return async_queue_depth_; }
-  bool IsAsyncIOSupported() const override { return io_uring_available_; }
+  bool IsAsyncIOSupported() const override { return true; }
   FileError AsyncWriteSequential(const std::uint8_t* data, std::size_t size, 
                                   AsyncWriteCallback callback = nullptr) override;
   int GetPendingWriteCount() const override { return pending_writes_.load(); }
@@ -99,14 +93,13 @@ class LinuxFileOperations : public FileOperations {
   bool using_direct_io_;
   bool direct_io_attempted_;  // True if O_DIRECT was attempted for this device
   
-  // io_uring state
+  // async state
   int async_queue_depth_;
   std::atomic<int> pending_writes_;
   std::atomic<bool> cancelled_;
   FileError first_async_error_;
   std::uint64_t async_write_offset_;
-  bool io_uring_available_;
-  io_uring* ring_;
+  int is_destr_;
   
   // Track callbacks by user_data pointer
   struct PendingWrite {
@@ -125,8 +118,6 @@ class LinuxFileOperations : public FileOperations {
   FileError OpenInternal(const char* path, int flags, mode_t mode = 0);
   static bool IsBlockDevicePath(const std::string& path);
   
-  bool InitIOUring();
-  void CleanupIOUring();
   void ProcessCompletions(bool wait);
   FileError AttemptSyncFallback() override;
   bool DrainAndSwitchToSync(int timeoutSeconds) override;
