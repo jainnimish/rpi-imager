@@ -85,11 +85,9 @@ class UnixFileOperations : public FileOperations {
   }
 
   // Platform-dependent implementations
-  virtual bool IsAsyncIOSupported() const override = 0;
-  virtual bool SetAsyncQueueDepth(int depth) override = 0;
-  virtual void CancelAsyncIO() override = 0;
+  virtual void CancelAsyncIO() override;
   virtual FileError AsyncWriteSequential(const std::uint8_t* data, std::size_t size,
-                                  AsyncWriteCallback callback = nullptr) override = 0;
+                                         AsyncWriteCallback callback = nullptr) override;
   // GetAsyncIOStats() inherited from FileOperations base class
 
   virtual FileError AttemptSyncFallback() override;

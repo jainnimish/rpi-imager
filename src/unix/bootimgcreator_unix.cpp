@@ -14,17 +14,9 @@
 #include <QDebug>
 #include <QSet>
 
-namespace {
-    // Implementations differ between OSX and FreeBSD
-    bool attachDiskImage(const QString& imagePath, QString& device);
-    bool detachDiskImage(const QString& device);
-    bool mountFilesystem(const QString& device, const QString& mountPoint);
-}
-
 bool BootImgCreator::createBootImg(const QMap<QString, QByteArray> &files,
                                              const QString &outputPath,
-                                             qint64 totalSize
-                                             )
+                                             qint64 totalSize)
 {
 #ifdef Q_OS_FREEBSD
     const QString platformName = "FreeBSD";
