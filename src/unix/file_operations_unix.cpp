@@ -29,6 +29,8 @@ using rpi_imager::TimeoutDefaults::kAsyncFirstCompletionTimeoutMs;
 
 namespace rpi_imager {
 
+FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string&);
+
 // Use the common logging function from file_operations.cpp
 static void Log(const std::string& msg) {
     FileOperationsLog(msg);
@@ -385,7 +387,7 @@ void UnixFileOperations::PollAsyncCompletions() {
     // no-op there too.
 }
 
-FileError UnixFileOperations::WaitPendingWritesCommon() {
+FileError UnixFileOperations::WaitForPendingWrites() {
   // Wait for pending writes to complete or be cancelled.
   //
   // DESIGN: Stall detection is handled by WriteProgressWatchdog at the ImageWriter level.
@@ -447,7 +449,7 @@ FileError UnixFileOperations::AttemptSyncFallback() {
     return FileError::kSuccess;
 }
 
-bool UnixFileOperations::DrainSwitchCommon(int stallTimeoutSeconds) {
+bool UnixFileOperations::DrainAndSwitchToSync(int stallTimeoutSeconds) {
   // First, prevent new async writes by switching to sync mode
   sync_fallback_mode_ = true;
 
@@ -506,12 +508,6 @@ bool UnixFileOperations::DrainSwitchCommon(int stallTimeoutSeconds) {
 FileError UnixFileOperations::GetDeviceSize(std::uint64_t& size) {
     (void)size;
     return FileError::kSizeError;  // Default: not implemented
-}
-
-// Platform-specific device I/O limits query - to be implemented by Linux/FreeBSD
-FileOperations::DeviceIOLimits UnixFileOperations::QueryPlatformDeviceIOLimits(const std::string& path) {
-    (void)path;
-    return FileOperations::DeviceIOLimits{};  // Default: no limits
 }
 
 } // namespace rpi_imager

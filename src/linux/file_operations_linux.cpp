@@ -36,6 +36,8 @@ using rpi_imager::TimeoutDefaults::kAsyncFirstCompletionTimeoutMs;
 
 namespace rpi_imager {
 
+FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string&);
+
 // Use the common logging function from file_operations.cpp
 static void Log(const std::string& msg) {
     FileOperationsLog(msg);
@@ -72,7 +74,7 @@ FileError LinuxFileOperations::GetDeviceSize(std::uint64_t& size) {
 }
 
 // Linux-specific device I/O limits query using sysfs
-FileOperations::DeviceIOLimits LinuxFileOperations::QueryPlatformDeviceIOLimits(const std::string& path) {
+FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) {
     FileOperations::DeviceIOLimits limits;
 
     // Read max_sectors_kb from sysfs
@@ -582,14 +584,6 @@ FileError LinuxFileOperations::AttemptSyncFallback() {
   return FileError::kSuccess;
 #else
   return FileError::kSuccess;
-#endif
-}
-
-bool LinuxFileOperations::DrainAndSwitchToSync(int stallTimeoutSeconds) {
-#ifdef HAVE_LIBURING
-  return DrainSwitchCommon(stallTimeoutSeconds);
-#else
-  return true;
 #endif
 }
 

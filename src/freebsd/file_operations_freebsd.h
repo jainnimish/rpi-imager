@@ -19,7 +19,7 @@ namespace rpi_imager {
 class FreeBSDFileOperations : public UnixFileOperations {
  public:
   FreeBSDFileOperations();
-  ~FreeBSDFileOperations() override;
+  virtual ~FreeBSDFileOperations();
 
   // Non-copyable, non-movable
   FreeBSDFileOperations(const FreeBSDFileOperations&) = delete;
@@ -32,18 +32,15 @@ class FreeBSDFileOperations : public UnixFileOperations {
   bool IsAsyncIOSupported() const override { return true; }
   FileError AsyncWriteSequential(const std::uint8_t* data, std::size_t size,
                                   AsyncWriteCallback callback = nullptr) override;
-  FileError WaitForPendingWrites() override;
   void CancelAsyncIO() override;
+  FileError AttemptSyncFallback() override;
 
  private:
   int is_destr_;
 
-  static bool IsBlockDevicePath(const std::string& path) override;
-  FileError GetDeviceSize(std::uint64_t& size) override;
-  DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) override;
   void ProcessCompletions(bool wait) override;
-  FileError AttemptSyncFallback() override;
-  bool DrainAndSwitchToSync(int timeoutSeconds) override;
+  bool IsBlockDevicePath(const std::string& path) override;
+  FileError GetDeviceSize(std::uint64_t& size) override;
 };
 
 } // namespace rpi_imager

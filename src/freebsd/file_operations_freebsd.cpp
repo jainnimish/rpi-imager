@@ -100,7 +100,7 @@ FileError FreeBSDFileOperations::GetDeviceSize(std::uint64_t& size) {
 }
 
 // Device I/O limits query using camlib
-FileOperations::DeviceIOLimits FreeBSDFileOperations::QueryPlatformDeviceIOLimits(const std::string& path) {
+FileOperations::DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) {
     FileOperations::DeviceIOLimits limits;
     struct cam_device *dev;
     union ccb *ccb;
@@ -363,11 +363,6 @@ void FreeBSDFileOperations::CancelAsyncIO() {
   cancelled_.store(true);
 }
 
-// Use common UNIX implementation
-FileError FreeBSDFileOperations::WaitForPendingWrites() {
-  return WaitPendingWritesCommon();
-}
-
 // DESIGN:
 // Since aio_cancel doesn't operate on raw disk I/O,
 // we can only force future writes to sync. Dealing with pending_writes_
@@ -462,11 +457,6 @@ FileError FreeBSDFileOperations::AttemptSyncFallback() {
 
   Log("Sync fallback successful - continuing in sync mode");
   return FileError::kSuccess;
-}
-
-// Use common UNIX implementation
-bool FreeBSDFileOperations::DrainAndSwitchToSync(int stallTimeoutSeconds) {
-    return DrainSwitchCommon(stallTimeoutSeconds);
 }
 
 // Platform-specific factory function implementation

@@ -85,13 +85,16 @@ class UnixFileOperations : public FileOperations {
   }
 
   // Platform-dependent implementations
-  virtual bool IsAsyncIOSupported() = 0;
-  virtual bool SetAsyncQueueDepth(int depth) = 0;
-  virtual FileError WaitForPendingWrites() = 0;
-  virtual void CancelAsyncIO() = 0;
+  virtual bool IsAsyncIOSupported() const override = 0;
+  virtual bool SetAsyncQueueDepth(int depth) override = 0;
+  virtual void CancelAsyncIO() override = 0;
   virtual FileError AsyncWriteSequential(const std::uint8_t* data, std::size_t size,
-                                  AsyncWriteCallback callback = nullptr) = 0;
+                                  AsyncWriteCallback callback = nullptr) override = 0;
   // GetAsyncIOStats() inherited from FileOperations base class
+
+  virtual FileError AttemptSyncFallback() override;
+  virtual bool DrainAndSwitchToSync(int timeoutSeconds) override;
+  virtual FileError WaitForPendingWrites() override;
 
  protected:
   int fd_;
@@ -118,23 +121,14 @@ class UnixFileOperations : public FileOperations {
   };
   std::unordered_map<std::uint64_t, PendingWrite> pending_callbacks_;
   mutable std::mutex pending_mutex_;
-
   // Note: write_latency_stats_ is inherited from FileOperations base class
-
-  FileError OpenInternal(const char* path, int flags, mode_t mode = 0);
 
   // Platform-specific methods to be implemented by Linux/FreeBSD
   virtual bool IsBlockDevicePath(const std::string& path) = 0;
   virtual FileError GetDeviceSize(std::uint64_t& size) = 0;
-  virtual DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) = 0;
 
+  FileError OpenInternal(const char* path, int flags, mode_t mode = 0);
   virtual void ProcessCompletions(bool wait) = 0;
-  virtual FileError AttemptSyncFallback() = 0;
-  virtual bool DrainAndSwitchToSync(int timeoutSeconds) = 0;
-
-  // Helper functions for mostly common implementations
-  bool DrainSwitchCommon(int timeoutSeconds) override;
-  FileError WaitPendingWritesCommon() override;
 };
 
 } // namespace rpi_imager

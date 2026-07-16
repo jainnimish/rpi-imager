@@ -40,6 +40,10 @@ class LinuxFileOperations : public UnixFileOperations {
   FileError WaitForPendingWrites() override;
   void CancelAsyncIO() override;
 
+#ifdef HAVE_LIBURING
+  bool DrainAndSwitchToSync(int stallTimeoutSeconds) override { return true; }
+#endif
+
  private:
   // io_uring state
   bool io_uring_available_;
