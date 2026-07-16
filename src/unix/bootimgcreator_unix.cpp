@@ -6,7 +6,7 @@
  * to implement boot image creation.
  */
 
-#include "bootimgcreator.h"
+#include "bootimgcreator_unix.h"
 #include <QFile>
 #include <QDir>
 #include <QProcess>
@@ -14,15 +14,10 @@
 #include <QDebug>
 #include <QSet>
 
-bool BootImgCreator::createBootImg(const QMap<QString, QByteArray> &files,
+bool BootImgCreatorUnix::createBootImg(const QMap<QString, QByteArray> &files,
                                              const QString &outputPath,
                                              qint64 totalSize)
 {
-#ifdef Q_OS_FREEBSD
-    const QString platformName = "FreeBSD";
-#else
-    const QString platformName = "macOS";
-#endif
     if (files.isEmpty()) {
         qDebug() << "BootImgCreator (" << platformName << "): no files to pack";
         return false;

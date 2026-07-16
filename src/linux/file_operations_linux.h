@@ -40,7 +40,7 @@ class LinuxFileOperations : public UnixFileOperations {
   FileError WaitForPendingWrites() override;
   void CancelAsyncIO() override;
 
-#ifdef HAVE_LIBURING
+#ifndef HAVE_LIBURING
   bool DrainAndSwitchToSync(int stallTimeoutSeconds) override { return true; }
 #endif
 
@@ -49,15 +49,13 @@ class LinuxFileOperations : public UnixFileOperations {
   bool io_uring_available_;
   io_uring* ring_;
 
-  static bool IsBlockDevicePath(const std::string& path) override;
+  bool IsBlockDevicePath(const std::string& path) override;
   FileError GetDeviceSize(std::uint64_t& size) override;
-  DeviceIOLimits QueryPlatformDeviceIOLimits(const std::string& path) override;
 
   bool InitIOUring();
   void CleanupIOUring();
   void ProcessCompletions(bool wait) override;
   FileError AttemptSyncFallback() override;
-  bool DrainAndSwitchToSync(int timeoutSeconds) override;
 };
 
 } // namespace rpi_imager
