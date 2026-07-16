@@ -39,6 +39,12 @@ public:
     static bool createBootImg(const QMap<QString, QByteArray> &files, 
                              const QString &outputPath, 
                              qint64 totalSize);
+private:
+    static bool attachDiskImage(const QString&, QString&);
+
+    static bool detachDiskImage(const QString&);
+
+    static bool mountFilesystem(const QString&, const QString&);
 };
 
 #endif // BOOTIMGCREATOR_H
