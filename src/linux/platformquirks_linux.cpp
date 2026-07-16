@@ -25,9 +25,9 @@
 #include <poll.h>          // poll() instead of select()
 #include <signal.h>        // Signal masking for worker thread
 #include <net/if.h>
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
-#include <mntent.h>
+#include <ifaddrs.h>
+#include <netlink/netlink.h>
+#include <netlink/netlink_route.h>
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -51,6 +51,9 @@
 #include <QUuid>
 #include <vector>
 #include <string>
+
+#include <sys/sysctl.h>
+#include <libgeom.h>
 
 #ifdef QT_DBUS_LIB
 // xdg-desktop-portal OpenURI is only used by builds that link Qt DBus (the GUI
@@ -142,7 +145,7 @@ namespace {
                         struct ifinfomsg* ifi = reinterpret_cast<struct ifinfomsg*>(NLMSG_DATA(nh));
                         
                         // Skip loopback interface
-                        if (ifi->ifi_type == ARPHRD_LOOPBACK) continue;
+                        if (ifi->ifi_type == IFT_LOOP) continue;
                         
                         bool linkUp = (ifi->ifi_flags & IFF_UP) && (ifi->ifi_flags & IFF_RUNNING);
                         fprintf(stderr, "Network link change detected: interface %d, up=%d\n", 
@@ -460,6 +463,89 @@ namespace {
         });
         return commandExistsResult[idx];
     }
+
+    bool isValidDevice(const struct gmesh *devtree, const QString& path) {
+        std::array<QString, 2> validDiskTypes = { "DISK", "MD" };
+        struct gclass *geom_class;
+        struct ggeom *geom;
+
+        LIST_FOREACH(geom_class, &devtree->lg_class, lg_class) {
+            QString type = geom_class->lg_name;
+            if (std::none_of(validDiskTypes.begin(), validDiskTypes.end(),
+                             [&type](const QString& validType) { return type == validType; })) {
+                continue;
+            }
+
+            LIST_FOREACH(geom, &geom_class->lg_geom, lg_geom) {
+                if (g_device_path(geom->lg_name) == path) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    std::unordered_set<QString> getPartitions(const struct gmesh *devtree, const QString& path) {
+        std::unordered_set<QString> partitions;
+        struct gclass *geom_class;
+        struct ggeom *geom;
+        struct gprovider *provider;
+
+        LIST_FOREACH(geom_class, &devtree->lg_class, lg_class) {
+            if (QString(geom_class->lg_name) != "PART") {
+                continue;
+            }
+
+            LIST_FOREACH(geom, &geom_class->lg_geom, lg_geom) {
+                if (g_device_path(geom->lg_name) != path) {
+                    continue;
+                }
+
+                // Look through partitions and add them to the unmount list
+                LIST_FOREACH(provider, &geom->lg_provider, lg_provider) {
+                    // Unmount every partition on the disk
+                    partitions.insert(provider->lg_name);
+                }
+
+                break;
+            }
+
+            break;
+        }
+
+        return partitions;
+    }
+
+    QStringList unmountAllDisks(const std::unordered_set<QString>& partitions, const QString& path) {
+        QStringList failedUnmounts;
+
+        struct statfs *mntlist;
+        int nmnt = getmntinfo(&mntlist, MNT_WAIT);
+
+        for (int i = 0; i < nmnt; i++) {
+            char *from = mntlist[i].f_mntfromname;
+            if (path != from && !partitions.contains(from)) {
+                continue;
+            }
+
+            char *unmountPath = g_device_path(mntlist[i].f_mntonname);
+            if (unmount(unmountPath, 0) == -1) {
+                qDebug() << "unmountAllDisks: unmounted" << unmountPath << "(normal, first try)";
+            } else if (unmount(unmountPath, 0) == -1) {
+                qDebug() << "unmountAllDisks: unmounted" << unmountPath << "(normal, second try)";
+            } else if (unmount(unmountPath, MNT_FORCE) == -1) {
+                qDebug() << "unmountAllDisks: unmounted" << unmountPath << "(MNT_FORCE; may lead to data loss)";
+            } else {
+                failedUnmounts.append(unmountPath);
+                qWarning() << "unmountAllDisks: Failed to unmount target"
+                           << ", unmountPath=" << unmountPath
+                           << ", errno=" << errno << " (" << std::strerror(errno) << ")";
+            }
+        }
+
+        return failedUnmounts;
+    }
 }
 
 bool isBeepAvailable() {
@@ -568,32 +654,18 @@ bool hasNetworkConnectivity() {
     // Check multiple indicators of network connectivity on Linux
     
     // Method 1: Check if any network interface (other than loopback) is up
-    // This is fast (sysfs read) and avoids spawning processes
-    QDir sysNet("/sys/class/net");
-    if (sysNet.exists()) {
-        QStringList interfaces = sysNet.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-        for (const QString &iface : interfaces) {
-            if (iface == "lo") continue; // Skip loopback
-            
-            // Security: Validate interface name to prevent path traversal attacks
-            // A malicious interface name like "../../../etc/passwd" could read arbitrary files
-            if (!isValidInterfaceName(iface)) {
-                qWarning() << "Skipping invalid interface name:" << iface;
-                continue;
-            }
-            
-            // Check if interface is up
-            QFile operstate(QString("/sys/class/net/%1/operstate").arg(iface));
-            if (operstate.open(QIODevice::ReadOnly)) {
-                QString state = QString::fromLatin1(operstate.readAll()).trimmed();
-                operstate.close();
-                if (state == "up") {
-                    // Interface is up - cache and return
-                    g_cachedNetworkConnectivity.store(true, std::memory_order_relaxed);
-                    g_networkConnectivityCacheValid.store(true, std::memory_order_relaxed);
-                    return true;
-                }
-            }
+    struct ifaddrs *ifas, *ifa;
+
+    getifaddrs(&ifas);
+
+    for (ifa = ifas; ifa != NULL; ifa = ifa->ifa_next) {
+        if (QString(ifa->ifa_name) == "lo") continue;
+
+        if (ifa->ifa_flags & IFF_UP) {
+            // Interface is up; cache and return
+            g_cachedNetworkConnectivity.store(true, std::memory_order_relaxed);
+            g_networkConnectivityCacheValid.store(true, std::memory_order_relaxed);
+            return true;
         }
     }
     
@@ -626,39 +698,7 @@ bool hasNetworkConnectivity() {
 }
 
 bool isNetworkReady() {
-    // First check basic connectivity
-    if (!hasNetworkConnectivity()) {
-        return false;
-    }
-    
-    // Check if systemd-timesyncd has synchronized time
-    // This is important for embedded systems where the RTC might not be set
-    // systemd-timesyncd updates the timestamp of /var/lib/systemd/timesync/clock when synced
-    QFile clockFile("/var/lib/systemd/timesync/clock");
-    QFile timesyncBinary("/lib/systemd/systemd-timesyncd");
-    
-    // If systemd-timesyncd is not present, assume time is reliable
-    if (!timesyncBinary.exists()) {
-        return true;
-    }
-    
-    // If clock file doesn't exist yet, time hasn't been synced
-    if (!clockFile.exists()) {
-        qDebug() << "systemd-timesyncd clock file does not exist - time not yet synchronized";
-        return false;
-    }
-    
-    // Check if clock file has been updated after the timesync binary was installed
-    // This indicates that time synchronization has occurred
-    QFileInfo clockInfo(clockFile);
-    QFileInfo binaryInfo(timesyncBinary);
-    
-    bool timeIsSynced = clockInfo.lastModified() > binaryInfo.lastModified();
-    if (!timeIsSynced) {
-        qDebug() << "systemd-timesyncd has not yet synchronized time";
-    }
-    
-    return timeIsSynced;
+    return hasNetworkConnectivity();
 }
 
 void startNetworkMonitoring(NetworkStatusCallback callback) {
@@ -778,26 +818,14 @@ void attachConsole() {
 }
 
 const char* getBundlePath() {
-    // Prefer $APPIMAGE (set by AppImage runtime) so that pkexec re-launches
-    // the AppImage wrapper rather than the unpacked binary inside it.
-    const char* appimage = ::getenv("APPIMAGE");
-    if (appimage)
-        return appimage;
-
-    // Fallback: resolve our own executable path. This covers native (non-AppImage)
-    // installs so that self-elevation via tryElevate() works for any packaging.
-    // Not cached: /proc/self/exe can change to "(deleted)" after a package upgrade,
-    // and we'd rather return null than a stale path.
     static thread_local char resolved[PATH_MAX];
-    ssize_t len = ::readlink("/proc/self/exe", resolved, sizeof(resolved) - 1);
-    if (len <= 0)
-        return nullptr;
-    resolved[len] = '\0';
+    size_t len = sizeof(resolved);
 
-    // After a package upgrade, the kernel appends " (deleted)" to the target.
-    // Treat that as unavailable rather than passing a bogus path to pkexec.
-    if (strstr(resolved, " (deleted)"))
+    const int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    if (sysctl(mib, 4, resolved, &len, NULL, 0) == -1) {
+	resolved[0] = '\0';
         return nullptr;
+    }
 
     return resolved;
 }
@@ -1563,130 +1591,51 @@ DiskResult unmountDisk(const QString& device) {
     QByteArray deviceBytes = device.toUtf8();
     const char* devicePath = deviceBytes.constData();
     
-    // Verify device exists and is not a directory
-    struct stat stats;
-    if (stat(devicePath, &stats) != 0) {
-        int savedErrno = errno;
-        qWarning() << "unmountDisk: stat failed for" << device << "-" << strerror(savedErrno);
+    if (devicePath == NULL) {
+        qDebug() << "PlatformQuirks::unmountDisk: Device with name '"
+                 << devicePath
+                 << "' does not appear to exist in the geom hierarchy";
         return DiskResult::InvalidDrive;
     }
-    if (S_ISDIR(stats.st_mode)) {
-        qWarning() << "unmountDisk: path is a directory, not a device:" << device;
-        return DiskResult::InvalidDrive;
-    }
-    
-    // Find all mount points for this device and its partitions
-    std::vector<std::string> mountDirs;
-    
-    FILE* procMounts = setmntent("/proc/mounts", "r");
-    if (!procMounts) {
-        int savedErrno = errno;
-        qWarning() << "unmountDisk: couldn't read /proc/mounts -" << strerror(savedErrno);
+
+    struct gmesh devtree;
+    int error = geom_gettree(&devtree);
+    if (error != 0) {
+        qWarning() << "PlatformQuirks::unmountDisk: Failed to open GEOM device tree"
+                   << ", &devtree=" << &devtree
+                   << ", errno=" << error << " (" << std::strerror(error) << ")";
         return DiskResult::Error;
     }
-    
-    struct mntent* mnt;
-    struct mntent data;
-    char mntBuf[4096 + 1024];  // Buffer for getmntent_r
-    
-    while ((mnt = getmntent_r(procMounts, &data, mntBuf, sizeof(mntBuf)))) {
-        // Check if this mount is on the device or any of its partitions
-        // Match exact device path or device path followed by a partition number (digit)
-        // This prevents matching /dev/sda when we have /dev/sda_backup or similar
-        size_t devicePathLen = strlen(devicePath);
-        if (strncmp(mnt->mnt_fsname, devicePath, devicePathLen) == 0) {
-            char nextChar = mnt->mnt_fsname[devicePathLen];
-            // Accept exact match, partition number (digit), or 'p' followed by digit (nvme style)
-            if (nextChar == '\0' || 
-                (nextChar >= '0' && nextChar <= '9') ||
-                (nextChar == 'p' && mnt->mnt_fsname[devicePathLen + 1] >= '0' && 
-                 mnt->mnt_fsname[devicePathLen + 1] <= '9')) {
-                qDebug() << "unmountDisk: found mount" << mnt->mnt_dir << "for" << mnt->mnt_fsname;
-                mountDirs.push_back(mnt->mnt_dir);
-            }
-        }
+
+    bool foundDisk = isValidDevice(&devtree, devicePath);
+    std::unordered_set<QString> partitions = getPartitions(&devtree, devicePath);
+
+    geom_deletetree(&devtree);
+
+    if (!foundDisk && partitions.size() == 0) {
+        qDebug() << "unmountDisk: Failed to find disk or partition table associated with"
+                 << devicePath;
+        return DiskResult::InvalidDrive;
     }
-    endmntent(procMounts);
-    
-    if (mountDirs.empty()) {
-        qDebug() << "unmountDisk: no mounts found for" << device;
-        return DiskResult::Success;  // Nothing to unmount
-    }
-    
-    // Unmount each mount point
-    // Strategy:
-    // 1. Try normal unmount first (no flags) - cleanest, ensures all data flushed
-    // 2. MNT_EXPIRE (mark for expiry, second call unmounts if idle)
-    // 3. MNT_DETACH (lazy unmount) - WARNING: can leave fs in inconsistent state
-    //    if there are open files, use only after user has been warned
-    // 4. MNT_FORCE - for truly stuck filesystems (usually network mounts)
-    //
-    // Note: We prefer MNT_DETACH over MNT_FORCE because MNT_FORCE can corrupt
-    // data on some filesystem types, while MNT_DETACH is safer (waits for
-    // open files to close before actual unmount).
-    
-    size_t unmountCount = 0;
-    std::vector<std::string> failedMounts;
-    
-    for (const std::string& mountDir : mountDirs) {
-        const char* mountPath = mountDir.c_str();
-        bool unmounted = false;
-        
-        // First attempt: normal unmount (cleanest, waits for all I/O)
-        if (umount(mountPath) == 0) {
-            qDebug() << "unmountDisk: unmounted" << mountPath << "(normal)";
-            unmounted = true;
-        }
-        // Second attempt: MNT_EXPIRE (mark for expiry)
-        else if (umount2(mountPath, MNT_EXPIRE) == 0) {
-            qDebug() << "unmountDisk: unmounted" << mountPath << "(MNT_EXPIRE first call)";
-            unmounted = true;
-        }
-        // Third attempt: MNT_EXPIRE again (actually unmounts if still idle)
-        else if (umount2(mountPath, MNT_EXPIRE) == 0) {
-            qDebug() << "unmountDisk: unmounted" << mountPath << "(MNT_EXPIRE second call)";
-            unmounted = true;
-        }
-        // Fourth attempt: MNT_DETACH (lazy unmount)
-        // This makes the mount point unavailable immediately but actual unmount
-        // happens when all open file handles are closed. Safe for our use case
-        // since we're about to overwrite the device anyway.
-        else if (umount2(mountPath, MNT_DETACH) == 0) {
-            qDebug() << "unmountDisk: unmounted" << mountPath << "(MNT_DETACH/lazy)";
-            unmounted = true;
-        }
-        // Last resort: MNT_FORCE (can cause data loss on some filesystems!)
-        else if (umount2(mountPath, MNT_FORCE) == 0) {
-            qWarning() << "unmountDisk: force-unmounted" << mountPath << "(MNT_FORCE - may cause data loss)";
-            unmounted = true;
-        }
-        
-        if (unmounted) {
-            unmountCount++;
-        } else {
-            int savedErrno = errno;
-            qWarning() << "unmountDisk: failed to unmount" << mountPath << ":" << strerror(savedErrno);
-            failedMounts.push_back(mountDir);
-        }
-    }
-    
-    if (unmountCount == mountDirs.size()) {
+
+    QStringList failedUnmounts = unmountAllDisks(partitions, devicePath);
+
+    if (failedUnmounts.size() == 0) {
         return DiskResult::Success;
-    } else if (unmountCount == 0) {
-        // All mounts failed - likely a permissions or busy issue
-        qWarning() << "unmountDisk: all" << mountDirs.size() << "mounts failed for" << device;
-        return DiskResult::Busy;
-    } else {
-        // Partial success - some mounts succeeded, some failed
-        // This is still a failure but we should log what succeeded for debugging
-        qWarning() << "unmountDisk: partial failure -" << unmountCount << "of" 
-                   << mountDirs.size() << "mounts succeeded for" << device;
-        qWarning() << "unmountDisk: failed mounts:" << failedMounts.size();
-        for (const auto& failed : failedMounts) {
-            qWarning() << "  -" << QString::fromStdString(failed);
+    } else if (failedUnmounts.size() < partitions.size()) {
+        qWarning() << "PlatformQuirks::unmountDisk: Partial failure"
+                   << ", total=" << partitions.size()
+                   << ", failed=" << failedUnmounts.size()
+                   << ", failed list:";
+
+        for (const auto failed : failedUnmounts) {
+            qWarning() << " -" << failed;
         }
-        return DiskResult::Busy;
+    } else {
+        qWarning() << "PlatformQuirks::unmountDisk: Failed to unmount all partitions"
+                   << ", total=" << partitions.size();
     }
+    return DiskResult::Busy;
 }
 
 DiskResult ejectDisk(const QString& device) {
@@ -1749,16 +1698,6 @@ const char* findCACertBundle()
 }
 
 void clearAppImageEnvironment() {
-    // AppImages set LD_LIBRARY_PATH and LD_PRELOAD to use bundled libraries.
-    // External tools need system libraries instead, otherwise they may fail
-    // due to symbol conflicts (e.g., PAM modules failing with "cannot open
-    // session: Module is unknown", or KDE tools failing with Qt version
-    // mismatches like "version `Qt_6.10' not found").
-    //
-    // This is safe because forked children running external tools don't need
-    // our bundled libraries.
-    unsetenv("LD_LIBRARY_PATH");
-    unsetenv("LD_PRELOAD");
 }
 
 bool registerUriScheme() {
